@@ -1,0 +1,5411 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+.agent/skills/esp32-module-standard/SKILL.md
+.agent/skills/pill-dispenser/SKILL.md
+.gitignore
+include/config.h
+include/dispenser.h
+include/logging.h
+include/netpie.h
+include/offline_module.h
+include/README
+include/scheduler.h
+include/telegram_messages.h
+include/telegram.h
+include/wifi_module.h
+lib/README
+platformio.ini
+src/dispenser.cpp
+src/main.cpp
+src/main.cpp.backup
+src/netpie.cpp
+src/offline_module.cpp
+src/scheduler.cpp
+src/telegram.cpp
+src/wifi_module.cpp
+test/i2c_scanner.cpp
+test/README
+timerwidget.txt
+widget_medicine_dispenser_backup.html
+widget_medicine_dispenser_legacy.html
+widget_medicine_dispenser.html
+widget_schedule_display.html
+widget_test_communication.html
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path=".agent/skills/esp32-module-standard/SKILL.md">
+---
+name: esp32-module-standard
+description: A skill for creating new sensor modules and components for the ESP32 Pill Dispenser System. Use this when adding new sensors, actuators, or features to the project.
+---
+
+# ESP32 Pill Dispenser Module Skill
+
+You are an expert in ESP32 development, PlatformIO, and embedded systems. When this skill is activated, you must strictly follow these rules:
+
+## 1. File Structure Standards
+
+- Every new module must have **separate header (.h) and implementation (.cpp) files**
+- Header files go in `include/` directory
+- Implementation files go in `src/` directory
+- Use the existing naming convention: `moduleName.h` and `moduleName.cpp`
+
+## 2. Non-Blocking Architecture
+
+- **CRITICAL:** Never use `delay()` in the main loop - use `millis()` based timing instead
+- Implement a `moduleSetup()` function for initialization
+- Implement a `moduleLoop()` function that gets called from `main.cpp`
+- Use state machines for complex operations that require waiting
+
+```cpp
+// ✅ Correct Non-blocking pattern
+static unsigned long lastReadTime = 0;
+if (millis() - lastReadTime >= READ_INTERVAL) {
+    lastReadTime = millis();
+    // Do sensor reading here
+}
+
+// ❌ Wrong - Never use delay()
+delay(1000);
+```
+
+## 3. Logging Standards
+
+- Use the project's logging macros: `LOG_DEBUG()`, `LOG_INFO()`, `LOG_WARN()`, `LOG_ERROR()`
+- Always include function context in logs: `[ModuleName]`
+- Log important state changes and errors
+
+## 4. Configuration
+
+- Add configurable parameters to `include/config.h`
+- Add sensitive data (keys, passwords) to `include/secrets.h`
+- Use `#define` with clear naming: `MODULENAME_PARAMETER_NAME`
+
+## 5. NETPIE Integration
+
+- If the module produces sensor data, add it to the shadow update in `netpie.cpp` (or `offline_module.cpp` if offline-aware)
+- Follow the existing JSON structure format
+- Use consistent key naming in lowercase with underscores
+
+## 6. Code Quality
+
+- Include proper header guards: `#ifndef MODULENAME_H` / `#define MODULENAME_H`
+- Add descriptive comments in Thai for educational purposes
+- Implement input validation and error handling
+- Use `extern` for global data access across files
+
+## 7. Production Standards
+
+### 7.1 Non-Blocking Requirements (Critical for Production)
+
+- **ABSOLUTELY NO `delay()` ALLOWED** - ใช้ `millis()` based timing เท่านั้น
+- Use **State Machines** for multi-step operations (e.g., servo movement, IR detection)
+- Implement **Async I/O patterns** - never wait synchronously for network/sensor responses
+- Always **yield to other tasks** using `vTaskDelay(1)` or `yield()` in long loops (if using FreeRTOS tasks)
+- Implement **timeout mechanisms** for all external communications
+
+```cpp
+// ✅ Production Non-blocking State Machine Pattern
+enum DispenserState { IDLE, DISPENSING, DETECTING, ERROR };
+static DispenserState state = IDLE;
+static unsigned long stateTimer = 0;
+
+void dispenserLoop() {
+    switch (state) {
+        case IDLE:
+             // Wait for trigger
+            break;
+        case DISPENSING:
+            if (isDispenseComplete()) {
+                state = DETECTING;
+                stateTimer = millis();
+            } else if (millis() - stateTimer > TIMEOUT_MS) {
+                state = ERROR;
+            }
+            break;
+        case DETECTING:
+            if (checkPill()) {
+                state = IDLE;
+            } else if (millis() - stateTimer > TIMEOUT_MS) {
+                state = ERROR;
+            }
+            break;
+        case ERROR:
+            handleError();
+            state = IDLE;
+            break;
+    }
+}
+```
+
+### 7.2 Error Handling & Reliability
+
+- Ensure code is **production-ready** with proper error handling and recovery
+- Implement **Watchdog Timer (WDT)** feeding in long-running operations
+- Optimize **memory usage** - prefer stack allocation over heap
+- Add **graceful degradation** - if a sensor fails, system should continue operating
+- Use **LOG_LEVEL** appropriately
+
+```cpp
+// ✅ Production-ready error handling
+bool readIRSensor() {
+    static int failCount = 0;
+    // ... reading logic ...
+    bool detected = digitalRead(IR_PIN) == LOW;
+
+    if (!detected && failCount > MAX_RETRIES) {
+         LOG_WARN("[Dispenser] IR Sensor potentially blocked or failed");
+         return false;
+    }
+    return detected;
+}
+```
+
+## 8. Response Language
+
+- **Crucial:** Explain your technical decisions in **Thai language** so the user can understand the implementation
+- Keep the tone professional, encouraging, and easy to understand for beginners
+- Reference existing modules (like `dispenser.cpp`, `netpie.cpp`) as examples
+
+## 9. Web Dashboard Standards (NETPIE Freeboard)
+
+- ใช้ **CSS Variables** หรือ Theme มาตรฐานของ Widget
+- JavaScript widget ต้องรองรับ **Offline Fallback**/Loading State
+- ใช้ **Request data** เมื่อโหลด Widget (`#["device"].readShadow()`)
+- แสดง **Loading State** ขณะรอข้อมูล
+
+```javascript
+// ✅ Correct Shadow Read
+#["device"].readShadow(function(err, data) {
+    if(!err) {
+        updateUI(data);
+    }
+});
+```
+
+## 10. API/Data Design Guidelines
+
+- Key names in JSON **must match** existing keys if related (e.g., `dose1_time`, `medicineName`)
+- Use **snake_case** for new key names
+- Update `netpie.cpp` to handle new keys in `onScheduleUpdate` or new callbacks
+
+## 11. Sensor/Actuator Validation
+
+- ตรวจสอบค่า `isnan()` หรือค่าที่ผิดปกติทุกครั้ง (เช่น Servo angle > 180)
+- กำหนด **MIN/MAX ที่เป็นไปได้** (e.g., IR Sensor count 0-6)
+- ใช้ **"Last Known Good Value"** เมื่ออ่านค่าผิดพลาด
+
+## 12. Memory Best Practices
+
+- ใช้ `static` สำหรับ buffer ที่ใช้ซ้ำ
+- ใช้ `strlcpy()` แทน `strcpy()`
+- ตรวจสอบ `ESP.getFreeHeap()` หากมีการใช้ Dynamic Memory เยอะ
+- หลีกเลี่ยง `String` concatenation แบบซ้ำๆ (ใช้ `snprintf()`)
+
+```cpp
+// ✅ Safe string handling
+static char buffer[128];
+snprintf(buffer, sizeof(buffer), "Status: %s, Pill: %s", status, pillName);
+```
+
+## 13. Pre-Deploy Checklist
+
+ก่อน Deploy ต้องตรวจสอบทุกข้อ:
+
+### Build & Compile
+
+- [ ] `pio run` สำเร็จไม่มี Error
+- [ ] ขนาด Flash ไม่เกิน 80%
+
+### Connectivity
+
+- [ ] WiFi Reconnect ทำงานปกติ
+- [ ] NETPIE/MQTT Reconnect ทำงานปกติ
+- [ ] Offline Queue ทำงานเมื่อเน็ตหลุด
+
+### Reliability
+
+- [ ] Watchdog Reset ทำงาน
+- [ ] Memory Leak check (รันยาวๆ แล้ว Heap ไม่ลด)
+
+### Features
+
+- [ ] Module ใหม่ทำงานถูกต้อง
+- [ ] ไม่กระทบฟีเจอร์เดิม (Regression Test)
+
+## 14. Code Consistency Verification (สำคัญมาก!)
+
+ก่อนสร้างหรือแก้ไข Module ใหม่ ต้องตรวจสอบความสอดคล้องของโค้ดทั้งระบบ:
+
+### 14.1 Constants & Defines Consistency
+
+ต้องใช้ค่าที่กำหนดใน `config.h` เท่านั้น **ห้าม hardcode ค่าซ้ำ**:
+
+```cpp
+// ❌ ผิด - Hardcode Pin
+pinMode(6, INPUT);
+
+// ✅ ถูก - ใช้ค่าจาก config.h
+pinMode(SWITCH_PIN, INPUT);
+```
+
+### 14.2 ก่อนเพิ่มโค้ดใหม่ ต้องค้นหาก่อน
+
+เมื่อจะใช้ค่า Constant หรือเรียกใช้ Library function ใหม่ **ต้อง grep ค้นหาก่อน**:
+
+```bash
+# ตัวอย่าง
+grep -r "SWITCH_PIN" include/ src/
+```
+
+### 14.3 Checklist ก่อน Commit โค้ดใหม่
+
+- [ ] ค้นหา `#define` หรือ `const` ที่เกี่ยวข้องก่อนใช้ค่าใหม่
+- [ ] ไม่มีการ hardcode ค่าที่ควรจะใช้จาก `config.h`
+- [ ] ตรวจสอบว่า MQTT topics ตรงกันทั้ง Publisher และ Subscriber
+- [ ] ตรวจสอบว่า JSON keys ตรงกันทั้ง Sender และ Receiver
+</file>
+
+<file path=".agent/skills/pill-dispenser/SKILL.md">
+---
+name: pill-dispenser-module
+description: A skill for developing and maintaining the ESP32 Medicine Dispenser system. Use this when adding features, fixing bugs, or modifying the pill dispensing system.
+---
+
+# ESP32 Medicine Dispenser Skill
+
+You are an expert in ESP32 development, PlatformIO, and embedded systems for IoT medical devices. When this skill is activated, you must strictly follow these rules:
+
+---
+
+## ⛔ กฎเหล็ก: ห้าม delay() ทุกกรณี!
+
+```cpp
+// ❌ ห้ามใช้ delay() ทุกที่ รวมถึง setup()
+delay(1000);      // ผิด!
+delay(100);       // ผิด!
+vTaskDelay(100);  // ผิด!
+
+// ✅ ใช้ millis() เท่านั้น
+static unsigned long startTime = millis();
+if (millis() - startTime > 1000) {
+  // do something
+}
+```
+
+### Non-blocking แทน delay() ใน setup()
+
+```cpp
+// ❌ ผิด
+void setup() {
+  Serial.begin(115200);
+  delay(1000);  // รอ Serial
+}
+
+// ✅ ถูก - ใช้ while loop with timeout
+void setup() {
+  Serial.begin(115200);
+  unsigned long start = millis();
+  while (!Serial && millis() - start < 1000) {
+    // รอ Serial แต่ไม่เกิน 1 วินาที
+  }
+}
+```
+
+---
+
+## 1. File Structure Standards
+
+```
+project/
+├── include/
+│   ├── config.h         # ค่า config ทั้งหมด (pins, timing)
+│   ├── secrets.h         # Credentials (ไม่ commit)
+│   ├── logging.h         # LOG macros
+│   ├── netpie.h          # MQTT module header
+│   ├── dispenser.h       # Servo/dispense logic header
+│   ├── scheduler.h       # Time scheduling header
+│   └── telegram.h        # Bot notification header
+├── src/
+│   ├── main.cpp          # Entry point, callbacks, loop
+│   ├── netpie.cpp        # MQTT implementation
+│   ├── dispenser.cpp     # Servo state machine
+│   ├── scheduler.cpp     # RTC/NTP scheduling
+│   └── telegram.cpp      # Telegram bot
+└── .gitignore            # ต้องมี secrets.h
+```
+
+---
+
+## 2. Offline Mode (สำคัญมาก!)
+
+ระบบต้องทำงานได้แม้ไม่มี WiFi:
+
+### 2.1 Offline Capabilities
+| ฟีเจอร์ | Offline Mode |
+|---------|-------------|
+| ปุ่ม Manual Dispense | ✅ ทำงานได้ |
+| Schedule จาก RTC | ✅ ทำงานได้ |
+| LED Indicator | ✅ ทำงานได้ |
+| IR Sensor | ✅ ทำงานได้ |
+| Servo Control | ✅ ทำงานได้ |
+| NETPIE | ⏸️ Queue ไว้ส่งทีหลัง |
+| Telegram | ⏸️ Queue ไว้ส่งทีหลัง |
+
+### 2.2 Offline Implementation Pattern
+
+```cpp
+// Flag สำหรับ offline mode
+bool isOnline = false;
+
+// Queue สำหรับเก็บ events ตอน offline
+struct OfflineEvent {
+  unsigned long timestamp;
+  String type;
+  String data;
+};
+std::vector<OfflineEvent> offlineQueue;
+
+void addToOfflineQueue(String type, String data) {
+  if (offlineQueue.size() < 50) {  // จำกัด 50 events
+    offlineQueue.push_back({rtc.now().unixtime(), type, data});
+  }
+}
+
+void syncOfflineQueue() {
+  if (!isOnline || offlineQueue.empty()) return;
+  
+  for (auto& event : offlineQueue) {
+    // ส่ง events ที่ค้างอยู่
+    updateShadow(event.type, event.data);
+  }
+  offlineQueue.clear();
+}
+```
+
+### 2.3 WiFi Check (Non-blocking)
+
+```cpp
+void checkConnectivity() {
+  static unsigned long lastCheck = 0;
+  if (millis() - lastCheck < 30000) return;
+  lastCheck = millis();
+  
+  isOnline = (WiFi.status() == WL_CONNECTED);
+  
+  if (isOnline && !offlineQueue.empty()) {
+    syncOfflineQueue();
+  }
+}
+```
+
+---
+
+## 3. State Machine Pattern (ใช้ทุกที่)
+
+### 3.1 Generic State Machine
+
+```cpp
+enum class State { IDLE, WORKING, WAITING, COMPLETE };
+
+class StateMachine {
+  State state = State::IDLE;
+  unsigned long timer = 0;
+  
+public:
+  void start() {
+    state = State::WORKING;
+    timer = millis();
+  }
+  
+  void update() {
+    switch (state) {
+      case State::IDLE: break;
+      
+      case State::WORKING:
+        // ทำงาน
+        if (workDone()) {
+          state = State::WAITING;
+          timer = millis();
+        }
+        break;
+        
+      case State::WAITING:
+        if (millis() - timer > WAIT_TIME) {
+          state = State::COMPLETE;
+        }
+        break;
+        
+      case State::COMPLETE:
+        // cleanup
+        state = State::IDLE;
+        break;
+    }
+  }
+};
+```
+
+### 3.2 Dispenser State Machine
+
+```cpp
+enum DispenseState { 
+  DISP_IDLE, 
+  DISP_OPENING, 
+  DISP_DETECTING, 
+  DISP_CLOSING, 
+  DISP_COMPLETE 
+};
+
+static DispenseState state = DISP_IDLE;
+static unsigned long stateTimer = 0;
+
+void dispenserLoop() {
+  switch (state) {
+    case DISP_IDLE: break;
+    
+    case DISP_OPENING:
+      if (millis() - stateTimer > 800) {
+        state = DISP_DETECTING;
+        stateTimer = millis();
+      }
+      break;
+      
+    case DISP_DETECTING:
+      if (checkPillDetected() || millis() - stateTimer > 200) {
+        state = DISP_CLOSING;
+        stateTimer = millis();
+      }
+      break;
+      
+    case DISP_CLOSING:
+      setServo(0);
+      if (millis() - stateTimer > 500) {
+        state = DISP_COMPLETE;
+      }
+      break;
+      
+    case DISP_COMPLETE:
+      // Log & notify
+      state = DISP_IDLE;
+      break;
+  }
+}
+```
+
+---
+
+## 4. WiFi Manager (Non-blocking)
+
+```cpp
+void setupWiFiManager() {
+  LOG_INFO("[WiFi] Starting...");
+  
+  wifiManager.setConfigPortalTimeout(120);
+  wifiManager.setConnectTimeout(30);
+  
+  // ไม่ใช้ delay - ถ้า fail ก็ทำงาน offline
+  if (!wifiManager.autoConnect(WIFI_AP_NAME)) {
+    LOG_WARN("[WiFi] Failed, running in OFFLINE mode");
+    isOnline = false;
+    return;  // ไม่ restart!
+  }
+  
+  isOnline = true;
+  LOG_INFO("[WiFi] Connected: %s", WiFi.localIP().toString().c_str());
+}
+```
+
+---
+
+## 5. NETPIE Integration (Offline-aware)
+
+```cpp
+void updateShadow(String status, String detail) {
+  if (!isOnline || !mqttClient.connected()) {
+    // เก็บไว้ใน queue
+    addToOfflineQueue(status, detail);
+    return;
+  }
+  
+  static char buffer[256];
+  snprintf(buffer, sizeof(buffer), 
+    "{\"data\":{\"status\":\"%s\",\"detail\":\"%s\"}}",
+    status.c_str(), detail.c_str());
+  mqttClient.publish("@shadow/data/update", buffer);
+}
+```
+
+---
+
+## 6. Logging Standards
+
+```cpp
+LOG_DEBUG("[Module] Debug info: %d", value);
+LOG_INFO("[Module] Important event: %s", name);
+LOG_WARN("[Module] Warning condition");
+LOG_ERROR("[Module] Error occurred: %d", errorCode);
+```
+
+**กฎ:**
+- ใส่ `[ModuleName]` prefix เสมอ
+- ไม่ใช้ String concatenation ใน log
+
+---
+
+## 7. Configuration
+
+### config.h
+```cpp
+#define DEVICE_NAME "pill-dispenser"
+#define FIRMWARE_VERSION "2.0.0"
+
+// Pins
+#define I2C_SDA 8
+#define I2C_SCL 9
+#define SWITCH_PIN 6
+#define LED_PIN 2
+
+// Timing (milliseconds)
+#define LOOP_INTERVAL 100
+#define WIFI_CHECK_INTERVAL 30000
+#define NTP_SYNC_INTERVAL 3600000
+```
+
+### secrets.h (ไม่ commit)
+```cpp
+#define MQTT_CLIENT_ID "xxx"
+#define MQTT_TOKEN "xxx"
+#define BOT_TOKEN "xxx"
+```
+
+---
+
+## 8. Memory Best Practices
+
+```cpp
+// ✅ ใช้ static buffer
+static char buffer[128];
+snprintf(buffer, sizeof(buffer), "Value: %d", value);
+
+// ❌ ห้าม String concatenation
+String msg = "Value: " + String(value);  // กิน heap!
+```
+
+---
+
+## 9. Pre-Deploy Checklist
+
+### Build
+- [ ] `pio run` ไม่มี Error/Warning
+- [ ] Flash usage < 80%
+- [ ] `grep -r "delay(" src/` **ต้องไม่มีผลลัพธ์**
+
+### Offline Mode
+- [ ] ปุ่มทำงานเมื่อไม่มี WiFi
+- [ ] Schedule ทำงานจาก RTC
+- [ ] Reconnect อัตโนมัติ
+- [ ] Queue sync เมื่อ online
+
+### Connectivity
+- [ ] WiFi reconnect (non-blocking)
+- [ ] MQTT reconnect (non-blocking)
+- [ ] NTP sync with retry
+
+### Hardware
+- [ ] Servo เคลื่อนที่ถูกต้อง
+- [ ] IR sensor ตรวจจับได้
+- [ ] LED indicator ทำงาน
+
+---
+
+## 10. Common Patterns
+
+### Non-blocking Retry
+
+```cpp
+class NonBlockingRetry {
+  unsigned long lastAttempt = 0;
+  int attempts = 0;
+  int maxAttempts;
+  unsigned long interval;
+  
+public:
+  NonBlockingRetry(int max, unsigned long ms) 
+    : maxAttempts(max), interval(ms) {}
+  
+  bool shouldRetry() {
+    if (attempts >= maxAttempts) return false;
+    if (millis() - lastAttempt < interval) return false;
+    lastAttempt = millis();
+    attempts++;
+    return true;
+  }
+  
+  void reset() { attempts = 0; }
+};
+```
+
+### Debounced Button (Non-blocking)
+
+```cpp
+class DebouncedButton {
+  uint8_t pin;
+  bool lastState = HIGH;
+  unsigned long lastChange = 0;
+  unsigned long debounceMs;
+  
+public:
+  DebouncedButton(uint8_t p, unsigned long ms = 50) 
+    : pin(p), debounceMs(ms) {}
+  
+  bool pressed() {
+    bool current = digitalRead(pin);
+    
+    if (current != lastState && millis() - lastChange > debounceMs) {
+      lastChange = millis();
+      lastState = current;
+      return (current == LOW);
+    }
+    return false;
+  }
+};
+```
+
+---
+
+## 11. Response Language
+
+- อธิบาย code และ decisions เป็น**ภาษาไทย**
+- Comments สามารถเป็นภาษาไทยได้
+- Variable/function names ใช้ภาษาอังกฤษ
+</file>
+
+<file path=".gitignore">
+.pio
+.vscode/.browse.c_cpp.db*
+.vscode/c_cpp_properties.json
+.vscode/launch.json
+.vscode/ipch
+
+# Secrets - ไม่ commit credentials
+include/secrets.h
+</file>
+
+<file path="include/config.h">
+#ifndef CONFIG_H
+#define CONFIG_H
+
+// ============================================
+// ESP32 Medicine Dispenser Configuration
+// ============================================
+
+// --- Device Info ---
+#define DEVICE_NAME "pill-dispenser"
+#define FIRMWARE_VERSION "2.0.0"
+
+// --- I2C Pins ---
+#define I2C_SDA 8
+#define I2C_SCL 9
+
+// --- GPIO Pins ---
+#define SWITCH_PIN 6
+#define LED_PIN 2
+
+// --- IR Sensor Config ---
+// true = ใช้ PCF8574, false = ใช้ GPIO 5
+#define USE_PCF8574 true
+
+#if USE_PCF8574
+  #define PCF8574_ADDRESS 0x20
+  #define IR_SENSOR_COUNT 6
+#else
+  #define IR_PIN 5
+#endif
+
+// --- PCA9685 Servo Driver ---
+#define PCA9685_ADDRESS 0x40
+#define SERVO_FREQ 50
+#define SERVO_ANGLE_DISPENSE 27
+#define SERVO_ANGLE_HOME 0
+
+// Servo Channels for 6 Modules
+#define SERVO_CH_1 0
+#define SERVO_CH_2 1
+#define SERVO_CH_3 2
+#define SERVO_CH_4 3
+#define SERVO_CH_5 4
+#define SERVO_CH_6 5
+
+// --- Timing Intervals (milliseconds) ---
+#define NTP_SYNC_INTERVAL     2000  
+#define BOT_CHECK_INTERVAL    2000      // 2 วินาที
+#define CONNECTION_CHECK_INTERVAL 30000 // 30 วินาที
+#define LOOP_INTERVAL         100       // Non-blocking loop interval
+
+// --- WiFi Manager ---
+#define WIFI_AP_NAME "PillDispenser_Setup"
+#define WIFI_RESET_HOLD_TIME 5000  // กด 5 วินาที รีเซ็ต WiFi
+
+// --- MQTT (NETPIE) ---
+#define MQTT_BROKER "broker.netpie.io"
+#define MQTT_PORT 1883
+
+// --- NTP Server ---
+#define NTP_SERVER "pool.ntp.org"
+#define GMT_OFFSET_SEC (7 * 3600)  // GMT+7
+#define DAYLIGHT_OFFSET_SEC 0
+
+// --- Logging Level ---
+// 0 = OFF, 1 = ERROR, 2 = WARN, 3 = INFO, 4 = DEBUG
+#define LOG_LEVEL 4
+
+#endif // CONFIG_H
+</file>
+
+<file path="include/dispenser.h">
+#ifndef DISPENSER_H
+#define DISPENSER_H
+
+#include <Arduino.h>
+
+// ============================================
+// Dispenser Module
+// ============================================
+
+//// Dispenser Module
+void dispenserSetup();
+void dispenserLoop();
+void dispensePill(int moduleIndex, String triggerSource);
+void setServo(int channel, int angle); // Updated to take channel
+uint16_t getPwm(int angle);
+
+// IR Sensor functions
+bool checkIRSensor(int channel);
+bool checkPillDetected(int moduleIndex);
+
+// Callback เมื่อจ่ายยาเสร็จ
+typedef void (*DispenseCompleteCallback)(bool success, int moduleIndex, String source);
+void setDispenseCompleteCallback(DispenseCompleteCallback callback);
+
+#endif // DISPENSER_H
+</file>
+
+<file path="include/logging.h">
+#ifndef LOGGING_H
+#define LOGGING_H
+
+#include <Arduino.h>
+#include "config.h"
+
+// ============================================
+// Logging Macros
+// ============================================
+// Usage: LOG_INFO("[Module] Message %d", value);
+
+#if LOG_LEVEL >= 1
+  #define LOG_ERROR(fmt, ...) Serial.printf("[ERROR] " fmt "\n", ##__VA_ARGS__)
+#else
+  #define LOG_ERROR(fmt, ...)
+#endif
+
+#if LOG_LEVEL >= 2
+  #define LOG_WARN(fmt, ...) Serial.printf("[WARN] " fmt "\n", ##__VA_ARGS__)
+#else
+  #define LOG_WARN(fmt, ...)
+#endif
+
+#if LOG_LEVEL >= 3
+  #define LOG_INFO(fmt, ...) Serial.printf("[INFO] " fmt "\n", ##__VA_ARGS__)
+#else
+  #define LOG_INFO(fmt, ...)
+#endif
+
+#if LOG_LEVEL >= 4
+  #define LOG_DEBUG(fmt, ...) Serial.printf("[DEBUG] " fmt "\n", ##__VA_ARGS__)
+#else
+  #define LOG_DEBUG(fmt, ...)
+#endif
+
+#endif // LOGGING_H
+</file>
+
+<file path="include/netpie.h">
+#ifndef NETPIE_H
+#define NETPIE_H
+
+#include <Arduino.h>
+#include <PubSubClient.h>
+#include <ArduinoJson.h>
+
+// ============================================
+// NETPIE MQTT Module
+// ============================================
+
+// --- ประกาศ extern client สำหรับ modules อื่น ---
+extern PubSubClient mqttClient;
+extern bool netpieConnected;
+
+// --- Functions ---
+void netpieSetup();
+void netpieLoop();
+void netpieConnect();
+void updateShadow(String status, String detail);
+void publishScheduleToShadow();
+
+// --- Callback type ---
+typedef void (*ScheduleCallback)(JsonDocument& doc);
+void setScheduleCallback(ScheduleCallback callback);
+
+typedef void (*DispenseCallback)(String source);
+void setDispenseCallback(DispenseCallback callback);
+
+#endif // NETPIE_H
+</file>
+
+<file path="include/offline_module.h">
+#ifndef OFFLINE_MODULE_H
+#define OFFLINE_MODULE_H
+
+#include <Arduino.h>
+
+void offlineSetup();
+void addToOfflineQueue(String type, String data);
+void syncOfflineQueue();
+void updateShadowOfflineAware(String status, String detail);
+
+#endif
+</file>
+
+<file path="include/README">
+This directory is intended for project header files.
+
+A header file is a file containing C declarations and macro definitions
+to be shared between several project source files. You request the use of a
+header file in your project source file (C, C++, etc) located in `src` folder
+by including it, with the C preprocessing directive `#include'.
+
+```src/main.c
+
+#include "header.h"
+
+int main (void)
+{
+ ...
+}
+```
+
+Including a header file produces the same results as copying the header file
+into each source file that needs it. Such copying would be time-consuming
+and error-prone. With a header file, the related declarations appear
+in only one place. If they need to be changed, they can be changed in one
+place, and programs that include the header file will automatically use the
+new version when next recompiled. The header file eliminates the labor of
+finding and changing all the copies as well as the risk that a failure to
+find one copy will result in inconsistencies within a program.
+
+In C, the convention is to give header files names that end with `.h'.
+
+Read more about using header files in official GCC documentation:
+
+* Include Syntax
+* Include Operation
+* Once-Only Headers
+* Computed Includes
+
+https://gcc.gnu.org/onlinedocs/cpp/Header-Files.html
+</file>
+
+<file path="include/scheduler.h">
+#ifndef SCHEDULER_H
+#define SCHEDULER_H
+
+#include <Arduino.h>
+#include <RTClib.h>
+
+// ============================================
+// Scheduler Module
+// ============================================
+
+// --- Time Slot Structure ---
+struct TimeSlot {
+  bool active = false;
+  int hour = -1;
+  int minute = -1;
+  String label = "";
+};
+
+// --- Extern Variables ---
+extern TimeSlot scheduleSlots[7]; // 0-6
+extern bool scheduleEnabled;
+extern RTC_DS3231 rtc;
+
+// --- Functions ---
+void schedulerSetup();
+void schedulerLoop();
+void checkSchedule();
+void syncRTCWithNTP();
+void parseTimeString(String timeStr, int &h, int &m);
+String formatTime(int h, int m);
+void updateScheduleTime(int index, int h, int m, bool active);
+
+// --- Callback เมื่อถึงเวลาจ่ายยา ---
+typedef void (*ScheduleTriggerCallback)(int doseNum, String label);
+void setScheduleTriggerCallback(ScheduleTriggerCallback callback);
+
+#endif // SCHEDULER_H
+</file>
+
+<file path="include/telegram_messages.h">
+#ifndef TELEGRAM_MESSAGES_H
+#define TELEGRAM_MESSAGES_H
+
+// ============================================
+// Telegram Notification Messages
+// สามารถแก้ไขข้อความที่จะส่งเข้า Telegram ได้ที่นี่
+// ============================================
+
+// --- ข้อความแจ้งเตือนต่างๆ ---
+#define MSG_TIME_TO_TAKE_PILL   "💊 ถึงเวลาทานยา!"      // เมื่อถึงเวลาทานยา
+#define MSG_DISPENSE_SUCCESS    "✅ จ่ายยาสำเร็จ"         // เมื่อจ่ายยาสำเร็จ
+#define MSG_DISPENSE_FAIL       "⚠️ ไม่พบยา"             // เมื่อจ่ายยาไม่สำเร็จ (ไม่มียาตกผ่าน sensor)
+#define MSG_DISPENSING          "💊 กำลังจ่ายยา..."       // เมื่อกำลังเริ่มจ่ายยา (Manual/Command)
+#define MSG_SYSTEM_ONLINE       "🟢 ระบบออนไลน์: "        // เมื่อระบบเริ่มทำงานและต่อเน็ตได้ (ตามด้วยชื่อยา)
+#define MSG_SYSTEM_STATUS       "📊 สถานะระบบ"            // หัวข้อสถานะระบบ
+#define MSG_COMMAND_LIST        "📋 คำสั่ง:"               // หัวข้อรายการคำสั่ง help
+
+// --- ข้อความในคำสั่ง /status ---
+#define MSG_LABEL_TIME          "เวลา: "
+#define MSG_LABEL_MEDICINE      "ยา: "
+#define MSG_LABEL_SCHEDULE      "ตารางเวลา: "
+#define MSG_LABEL_WIFI          "WiFi: "
+#define MSG_LABEL_MODE          "Mode: "
+#define MSG_STATUS_ON           "เปิด"
+#define MSG_STATUS_OFF          "ปิด"
+
+#endif // TELEGRAM_MESSAGES_H
+</file>
+
+<file path="include/telegram.h">
+#ifndef TELEGRAM_H
+#define TELEGRAM_H
+
+#include <Arduino.h>
+
+// ============================================
+// Telegram Bot Module
+// ============================================
+
+void telegramSetup();
+void telegramLoop();
+void sendTelegramNotification(String message);
+
+// Callback สำหรับคำสั่งจาก Telegram
+typedef void (*TelegramCommandCallback)(String command);
+void setTelegramCommandCallback(TelegramCommandCallback callback);
+
+#endif // TELEGRAM_H
+</file>
+
+<file path="include/wifi_module.h">
+#ifndef WIFI_MODULE_H
+#define WIFI_MODULE_H
+
+#include <Arduino.h>
+
+void wifiSetup();
+void checkConnectivity();
+void resetWiFi();
+bool isSystemOnline();
+String getWiFiSSID();
+
+#endif
+</file>
+
+<file path="lib/README">
+This directory is intended for project specific (private) libraries.
+PlatformIO will compile them to static libraries and link into the executable file.
+
+The source code of each library should be placed in a separate directory
+("lib/your_library_name/[Code]").
+
+For example, see the structure of the following example libraries `Foo` and `Bar`:
+
+|--lib
+|  |
+|  |--Bar
+|  |  |--docs
+|  |  |--examples
+|  |  |--src
+|  |     |- Bar.c
+|  |     |- Bar.h
+|  |  |- library.json (optional. for custom build options, etc) https://docs.platformio.org/page/librarymanager/config.html
+|  |
+|  |--Foo
+|  |  |- Foo.c
+|  |  |- Foo.h
+|  |
+|  |- README --> THIS FILE
+|
+|- platformio.ini
+|--src
+   |- main.c
+
+Example contents of `src/main.c` using Foo and Bar:
+```
+#include <Foo.h>
+#include <Bar.h>
+
+int main (void)
+{
+  ...
+}
+
+```
+
+The PlatformIO Library Dependency Finder will find automatically dependent
+libraries by scanning project source files.
+
+More information about PlatformIO Library Dependency Finder
+- https://docs.platformio.org/page/librarymanager/ldf.html
+</file>
+
+<file path="platformio.ini">
+; PlatformIO Project Configuration File
+;
+;   Build options: build flags, source filter
+;   Upload options: custom upload port, speed and extra flags
+;   Library options: dependencies, extra library storages
+;   Advanced options: extra scripting
+;
+; Please visit documentation for the other options and examples
+; https://docs.platformio.org/page/projectconf.html
+
+[env:esp32s3]
+platform = espressif32
+board = esp32-s3-devkitc-1
+framework = arduino
+board_build.mcu = esp32s3
+board_build.f_cpu = 240000000L
+board_upload.flash_size = 16MB
+board_build.flash_mode = qio
+board_build.partitions = default_16MB.csv
+board_build.arduino.memory_type = qio_opi
+monitor_speed = 115200
+upload_speed = 921600
+
+; กำหนด PSRAM
+build_flags = 
+    -DBOARD_HAS_PSRAM
+    -mfix-esp32-psram-cache-issue
+
+lib_deps =
+    adafruit/Adafruit PWM Servo Driver Library @ ^3.0.1
+    knolleary/PubSubClient @ ^2.8
+    bblanchon/ArduinoJson @ ^7.0
+    adafruit/RTClib @ ^2.1.1
+    witnessmenow/UniversalTelegramBot @ ^1.3.0
+    xreef/PCF8574 library @ ^2.3.4
+    SPI
+    tzapu/WiFiManager @ ^2.0.17
+</file>
+
+<file path="src/dispenser.cpp">
+#include "dispenser.h"
+#include "config.h"
+#include "logging.h"
+#include "netpie.h"
+#include <Wire.h>
+#include <Adafruit_PWMServoDriver.h>
+
+#if USE_PCF8574
+  #include <PCF8574.h>
+  PCF8574 pcf8574(PCF8574_ADDRESS);
+  const uint8_t IR_PINS[IR_SENSOR_COUNT] = {0, 1, 2, 3, 4, 5};
+#endif
+
+// ============================================
+// Dispenser Implementation
+// ============================================
+
+Adafruit_PWMServoDriver pca9685 = Adafruit_PWMServoDriver(PCA9685_ADDRESS);
+
+static DispenseCompleteCallback onDispenseComplete = nullptr;
+
+// --- Dispense State Machine ---
+enum DispenseState { IDLE, OPENING, DETECTING, CLOSING, COMPLETE };
+static DispenseState dispenseState = IDLE;
+static unsigned long stateTimer = 0;
+static String currentTrigger = "";
+static bool pillDetected = false;
+
+void setDispenseCompleteCallback(DispenseCompleteCallback callback) {
+  onDispenseComplete = callback;
+}
+
+// --- Setup ---
+void dispenserSetup() {
+  #if USE_PCF8574
+    pcf8574.begin();
+    for(int i = 0; i < IR_SENSOR_COUNT; i++) {
+      pcf8574.pinMode(IR_PINS[i], INPUT_PULLUP);
+    }
+    LOG_INFO("[Dispenser] PCF8574 ready with %d IR sensors", IR_SENSOR_COUNT);
+  #else
+    pinMode(IR_PIN, INPUT);
+    LOG_INFO("[Dispenser] IR Sensor on GPIO %d", IR_PIN);
+  #endif
+  
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, LOW);
+  
+  if (!pca9685.begin()) {
+    LOG_ERROR("[Dispenser] PCA9685 Not Found!");
+  } else {
+    pca9685.setPWMFreq(SERVO_FREQ);
+    LOG_INFO("[Dispenser] PCA9685 ready");
+  }
+  
+  // Reset all servos to home
+  for(int i=0; i<6; i++) {
+    setServo(i, SERVO_ANGLE_HOME);
+  }
+}
+
+// --- PWM Calculation ---
+uint16_t getPwm(int angle) {
+  angle = constrain(angle, 0, 180);
+  long us = map(angle, 0, 180, 500, 2500);
+  return (uint16_t)((us * 4096L) / 20000L);
+}
+
+void setServo(int channel, int angle) {
+  pca9685.setPWM(channel, 0, getPwm(angle));
+}
+
+// --- IR Sensor ---
+bool checkIRSensor(int channel) {
+  #if USE_PCF8574
+    if (channel >= 0 && channel < IR_SENSOR_COUNT) {
+      return pcf8574.digitalRead(IR_PINS[channel]) == LOW;
+    }
+    return false;
+  #else
+    return digitalRead(IR_PIN) == LOW;
+  #endif
+}
+
+bool checkPillDetected(int moduleIndex) {
+  return checkIRSensor(moduleIndex);
+}
+
+// --- Dispense (Non-blocking State Machine) ---
+// --- Dispense (Non-blocking State Machine) ---
+int currentModuleIndex = -1;
+
+void dispensePill(int moduleIndex, String triggerSource) {
+  if (dispenseState != IDLE) {
+    LOG_WARN("[Dispenser] Already dispensing, ignoring module %d", moduleIndex);
+    return;
+  }
+  
+  if (moduleIndex < 0 || moduleIndex >= 6) {
+    LOG_ERROR("[Dispenser] Invalid module index: %d", moduleIndex);
+    return;
+  }
+
+  LOG_INFO("[Dispenser] >>> Triggered Module %d by: %s", moduleIndex + 1, triggerSource.c_str());
+  currentTrigger = triggerSource;
+  currentModuleIndex = moduleIndex;
+  pillDetected = false;
+  
+  // เริ่ม state machine
+  digitalWrite(LED_PIN, HIGH);
+  updateShadow("dispensing", "Trigger: " + triggerSource + " (Mod " + String(moduleIndex+1) + ")");
+  
+  // Use correct servo channel based on index
+  int servoChannel = moduleIndex; // Assuming 0-5 mapping
+  pca9685.setPWM(servoChannel, 0, getPwm(SERVO_ANGLE_DISPENSE));
+  
+  dispenseState = OPENING;
+  stateTimer = millis();
+}
+
+// --- Non-blocking Loop ---
+void dispenserLoop() {
+  switch (dispenseState) {
+    case IDLE:
+      // ไม่ทำอะไร
+      break;
+      
+    case OPENING:
+      // รอ servo เปิด (800ms)
+      if (millis() - stateTimer > 800) {
+        dispenseState = DETECTING;
+        stateTimer = millis();
+      }
+      break;
+      
+    case DETECTING:
+      // เช็ค IR sensor (สูงสุด 200ms)
+      if (checkPillDetected(currentModuleIndex)) {
+        pillDetected = true;
+        dispenseState = CLOSING;
+        stateTimer = millis();
+      } else if (millis() - stateTimer > 200) {
+        dispenseState = CLOSING;
+        stateTimer = millis();
+      }
+      break;
+      
+    case CLOSING:
+      // ปิด servo กลับตำแหน่งเดิม
+      if (currentModuleIndex >= 0) {
+        int servoChannel = currentModuleIndex;
+        pca9685.setPWM(servoChannel, 0, getPwm(SERVO_ANGLE_HOME));
+      }
+      
+      if (millis() - stateTimer > 500) {
+        dispenseState = COMPLETE;
+      }
+      break;
+      
+    case COMPLETE:
+      digitalWrite(LED_PIN, LOW);
+      
+      if (pillDetected) {
+        LOG_INFO("[Dispenser] SUCCESS: Pill Detected");
+        updateShadow("success", "Pill Dispensed OK");
+      } else {
+        LOG_WARN("[Dispenser] EMPTY: No Pill Detected");
+        updateShadow("empty", "No pill detected");
+      }
+      
+      if (onDispenseComplete) {
+        onDispenseComplete(pillDetected, currentModuleIndex, currentTrigger);
+      }
+      
+      dispenseState = IDLE;
+      break;
+  }
+}
+</file>
+
+<file path="src/main.cpp">
+// ============================================
+// ESP32 Medicine Dispenser - Main
+// Skill Compliant: No delay(), Offline Mode
+// ============================================
+
+#include <Arduino.h>
+#include <Wire.h>
+#include <ArduinoJson.h>
+
+// --- Project Modules ---
+#include "config.h"
+#include "secrets.h"
+#include "logging.h"
+#include "netpie.h"
+#include "dispenser.h"
+#include "scheduler.h"
+#include "telegram.h"
+#include "wifi_module.h"
+#include "offline_module.h"
+#include "telegram_messages.h"
+
+// ============================================
+// Callbacks
+// ============================================
+
+// --- Global Schedule & Module Config ---
+struct GlobalTime {
+  uint8_t hour = 0;
+  uint8_t minute = 0;
+  String label = "";
+};
+
+GlobalTime globalTimes[7]; // 0=MornPre, 1=MornPost, ... 6=Bed
+String timeLabels[7] = {
+  "เช้า (ก่อนอาหาร)", "เช้า (หลังอาหาร)",
+  "กลางวัน (ก่อนอาหาร)", "กลางวัน (หลังอาหาร)",
+  "เย็น (ก่อนอาหาร)", "เย็น (หลังอาหาร)",
+  "ก่อนนอน"
+};
+
+struct ModuleConfig {
+  String name = "ยา " + String(1);
+  int count = 18;
+  uint8_t slots = 0; // Bitmask for 7 slots
+};
+
+ModuleConfig modules[6];
+bool scheduleEnabled = true;
+
+// Helper to parse time string "HH:mm"
+void parseGlobalTime(String timeStr, int index) {
+  if (timeStr.length() < 5) return;
+  globalTimes[index].hour = timeStr.substring(0, 2).toInt();
+  globalTimes[index].minute = timeStr.substring(3, 5).toInt();
+  globalTimes[index].label = timeLabels[index];
+}
+
+// Flag for pending confirmation (Bitmask 0-5)
+uint8_t pendingDispenseMask = 0;
+
+// เมื่อได้รับข้อมูล schedule จาก NETPIE
+void onScheduleUpdate(JsonDocument& doc) {
+  LOG_INFO("[Main] Processing 6-Module Schedule...");
+  JsonObject data = doc["data"];
+
+  // 1. Parse Global Times
+  String timeKeys[] = {"t_morn_pre", "t_morn_post", "t_noon_pre", "t_noon_post", "t_eve_pre", "t_eve_post", "t_bed"};
+  for (int i = 0; i < 7; i++) {
+    if (data[timeKeys[i]].is<String>()) {
+      parseGlobalTime(data[timeKeys[i]].as<String>(), i);
+      updateScheduleTime(i, globalTimes[i].hour, globalTimes[i].minute, true);
+    }
+  }
+
+  // 2. Parse Module Configs
+  for (int i = 0; i < 6; i++) {
+    String p = "med" + String(i + 1);
+    if (data[p + "_name"].is<String>()) modules[i].name = data[p + "_name"].as<String>();
+    if (data[p + "_count"].is<int>()) modules[i].count = data[p + "_count"].as<int>();
+    if (data[p + "_slots"].is<int>()) modules[i].slots = data[p + "_slots"].as<int>();
+  }
+  
+  // 3. Global Enable
+  if (data["scheduleEnabled"].is<int>()) {
+    scheduleEnabled = (data["scheduleEnabled"].as<int>() == 1);
+  }
+
+  LOG_INFO("=== Schedule Updated ===");
+  LOG_INFO("Global Active: %s", scheduleEnabled ? "YES" : "NO");
+  for(int i=0; i<6; i++) {
+    LOG_INFO("Mod %d: %s (Count: %d, Slots: 0x%02X)", i+1, modules[i].name.c_str(), modules[i].count, modules[i].slots);
+  }
+}
+
+// เมื่อได้รับคำสั่งจ่ายยาจาก NETPIE (Manual Dispense - Immediate)
+void onNetpieDispense(String source) {
+  // Format: "dispense_all" or "dispense_1" ... "dispense_6"
+  if (source == "dispense_all") {
+     for(int i=0; i<6; i++) dispensePill(i, "Manual All");
+  } else if (source.startsWith("dispense_")) {
+     int modIdx = source.substring(9).toInt() - 1;
+     if (modIdx >= 0 && modIdx < 6) {
+       dispensePill(modIdx, "Manual Mod " + String(modIdx+1));
+     }
+  }
+}
+
+// เมื่อถึงเวลาจ่ายยาตามตาราง (slotIndex 0-6) -> รอการยืนยัน
+void onScheduleTrigger(int slotIndex, String label) {
+  if (!scheduleEnabled) return;
+
+  LOG_INFO("[Schedule] Trigger Slot %d: %s", slotIndex, label.c_str());
+  
+  bool needed = false;
+  String pendingMeds = "";
+
+  for (int i = 0; i < 6; i++) {
+    // Check if module i is enabled for this slot
+    if (modules[i].slots & (1 << slotIndex)) {
+      if (modules[i].count > 0) {
+        // Mark as pending
+        pendingDispenseMask |= (1 << i);
+        needed = true;
+        pendingMeds += modules[i].name + ", ";
+      } else {
+        LOG_WARN("[Schedule] Module %d (%s) is EMPTY!", i+1, modules[i].name.c_str());
+        sendTelegramNotification("⚠️ ยาหมด: " + modules[i].name);
+      }
+    }
+  }
+
+  // แจ้งเตือนให้มากดยืนยัน
+  if (needed) {
+    LOG_INFO("[Schedule] Waiting for confirmation...");
+    updateShadow("dispensing_status", "waiting_confirm");
+    
+    if (isSystemOnline()) {
+      String msg = String(MSG_TIME_TO_TAKE_PILL) + "\n";
+      msg += "มื้อ: " + label + "\n";
+      msg += "รอจ่ายยา: " + pendingMeds + "\n";
+      msg += "🔘 กรุณากดปุ่มที่เครื่องเพื่อรับยา";
+      sendTelegramNotification(msg);
+    }
+  }
+}
+
+// เมื่อจ่ายยาเสร็จ
+void onDispenseComplete(bool success, int moduleIndex, String source) {
+  String status = success ? "success" : "empty";
+  String medName = (moduleIndex >= 0 && moduleIndex < 6) ? modules[moduleIndex].name : "Unknown";
+  String detail = success ? "Dispensed: " + medName : "Empty: " + medName;
+  
+  updateShadowOfflineAware(status, detail);
+  
+  if (isSystemOnline()) {
+    String msg = success ? String(MSG_DISPENSE_SUCCESS) : String(MSG_DISPENSE_FAIL);
+    msg += "\n" + medName + " (" + source + ")";
+    sendTelegramNotification(msg);
+  }
+}
+
+// เมื่อได้รับคำสั่งจาก Telegram
+void onTelegramCommand(String command) {
+  command.toLowerCase();
+  
+  // Example: /dispense 1
+  if (command.startsWith("/dispense") || command.startsWith("จ่ายยา")) {
+    int spaceIndex = command.indexOf(' ');
+    if (spaceIndex != -1) {
+      int modIdx = command.substring(spaceIndex + 1).toInt() - 1;
+      if (modIdx >= 0 && modIdx < 6) {
+        dispensePill(modIdx, "Telegram Command");
+        sendTelegramNotification("สั่งจ่ายยาตลับที่ " + String(modIdx+1));
+      } else {
+        sendTelegramNotification("ระบุตลับยา 1-6 เช่น /dispense 1");
+      }
+    } else {
+       sendTelegramNotification("ระบุตลับยา 1-6 เช่น /dispense 1");
+    }
+  }
+  else if (command == "/status" || command == "สถานะ") {
+    DateTime now = rtc.now();
+    String msg = String(MSG_SYSTEM_STATUS) + "\n";
+    msg += "เวลา: " + formatTime(now.hour(), now.minute()) + "\n";
+    for(int i=0; i<6; i++) {
+      msg += String(i+1) + ". " + modules[i].name + " (" + String(modules[i].count) + ")\n";
+    }
+    msg += String(MSG_LABEL_WIFI) + getWiFiSSID();
+    sendTelegramNotification(msg);
+  }
+  else if (command == "/help" || command == "ช่วย") {
+    String msg = String(MSG_COMMAND_LIST) + "\n";
+    msg += "/dispense [1-6] - จ่ายยาตลับ N\n";
+    msg += "/status - ดูสถานะยา\n";
+    sendTelegramNotification(msg);
+  }
+}
+
+// ============================================
+// Button Handling (Confirmation & Manual)
+// ============================================
+void buttonLoop() {
+  static unsigned long buttonPressStart = 0;
+  static bool buttonHandled = false;
+  
+  if (digitalRead(SWITCH_PIN) == LOW) {
+    if (buttonPressStart == 0) {
+      buttonPressStart = millis();
+      buttonHandled = false;
+    }
+    
+    unsigned long pressDuration = millis() - buttonPressStart;
+    
+    // กดค้าง 5 วินาที = รีเซ็ต WiFi
+    if (!buttonHandled && pressDuration > WIFI_RESET_HOLD_TIME) {
+      LOG_WARN("[Button] WiFi Reset triggered!");
+      resetWiFi();
+      buttonHandled = true;
+    }
+  } else {
+    // ปล่อยปุ่ม
+    if (buttonPressStart > 0 && !buttonHandled) {
+      unsigned long pressDuration = millis() - buttonPressStart;
+      
+      // กดสั้น (50ms - 1s)
+      if (pressDuration > 50 && pressDuration < 1000) {
+        
+        // 1. ถ้ามีคิวรอจ่ายยา (Pending Confirmation)
+        if (pendingDispenseMask > 0) {
+          LOG_INFO("[Button] Confirmed Dispense!");
+          updateShadow("dispensing_status", "confirmed");
+          
+          for(int i=0; i<6; i++) {
+            if (pendingDispenseMask & (1 << i)) {
+               dispensePill(i, "Confirmed Schedule");
+               
+               // Decrement count
+               if (modules[i].count > 0) {
+                 modules[i].count--;
+                 updateShadow("med" + String(i+1) + "_count", String(modules[i].count));
+               }
+            }
+          }
+          // Clear mask
+          pendingDispenseMask = 0;
+          
+        } else {
+          // 2. ถ้าไม่มีคิว -> Manual Dispense (Test Module 1)
+          LOG_INFO("[Button] Manual dispense Module 1!");
+          dispensePill(0, "Manual Button");
+        }
+      }
+    }
+    buttonPressStart = 0;
+    buttonHandled = false;
+  }
+}
+
+// ============================================
+// Setup (No delay!)
+// ============================================
+void setup() {
+  Serial.begin(115200);
+  
+  // Non-blocking Serial wait
+  unsigned long serialStart = millis();
+  while (!Serial && millis() - serialStart < 1000) {
+    // รอ Serial ไม่เกิน 1 วินาที
+  }
+  
+  LOG_INFO("=== ESP32 Medicine Dispenser v%s ===", FIRMWARE_VERSION);
+  LOG_INFO("[System] No delay() - Skill Compliant");
+  
+  // I2C Setup
+  Wire.begin(I2C_SDA, I2C_SCL);
+  Wire.setClock(100000);
+  
+  // Button Setup
+  pinMode(SWITCH_PIN, INPUT_PULLUP);
+  
+  // Initialize Modules
+  dispenserSetup();
+  schedulerSetup();
+  
+  // WiFi & Offline Queue
+  wifiSetup();
+  offlineSetup();
+  
+  // NTP & Time (if online)
+  if (isSystemOnline()) {
+    configTime(GMT_OFFSET_SEC, DAYLIGHT_OFFSET_SEC, NTP_SERVER);
+    syncRTCWithNTP();
+  } else {
+    LOG_INFO("[System] Using RTC time (offline)");
+  }
+  
+  // NETPIE
+  netpieSetup();
+  setScheduleCallback(onScheduleUpdate);
+  setDispenseCallback(onNetpieDispense);
+  
+  // Telegram
+  telegramSetup();
+  setTelegramCommandCallback(onTelegramCommand);
+  
+  // Dispenser Callback
+  setDispenseCompleteCallback(onDispenseComplete);
+  
+  // Schedule Callback
+  setScheduleTriggerCallback(onScheduleTrigger);
+  
+  // Startup notification (if online)
+  if (isSystemOnline()) {
+    sendTelegramNotification(String(MSG_SYSTEM_ONLINE) + " (6 Modules Ready)");
+  }
+  
+  LOG_INFO("=== READY (Mode: %s) ===", isSystemOnline() ? "ONLINE" : "OFFLINE");
+}
+
+// ============================================
+// Main Loop (Non-blocking)
+// ============================================
+void loop() {
+  // Non-blocking loop timing
+  static unsigned long lastLoopTime = 0;
+  
+  if (millis() - lastLoopTime < LOOP_INTERVAL) {
+    return;
+  }
+  lastLoopTime = millis();
+  
+  // --- Connectivity Check ---
+  checkConnectivity();
+  
+  // --- Module Loops ---
+  if (isSystemOnline()) {
+    netpieLoop();
+    telegramLoop();
+  }
+  
+  // ทำงานได้ทั้ง online/offline
+  dispenserLoop();
+  schedulerLoop();
+  
+  // --- Button (ทำงานได้เสมอ) ---
+  buttonLoop();
+}
+</file>
+
+<file path="src/main.cpp.backup">
+#include <Arduino.h>
+#include <Wire.h>
+#include <Adafruit_PWMServoDriver.h>
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <time.h>
+#include <PubSubClient.h>
+#include <ArduinoJson.h>
+#include <RTClib.h>
+#include <UniversalTelegramBot.h>
+#include <PCF8574.h>  // I/O Expander สำหรับ IR หลายตัว
+
+const char* ssid     = "18 โปร";
+const char* password = "peek2003";
+
+// --- NETPIE Config ---
+const char* mqtt_broker = "broker.netpie.io";
+const int   mqtt_port   = 1883;
+const char* mqtt_client_id = "1501dee1-63c2-4d4b-80a3-ff5cb7c14ab1";
+const char* mqtt_token     = "AUAbCxfYonbPQgBKyuGxwvas1vL9M9Md";
+const char* mqtt_secret    = "4mgegowymnSxszLKSqMigjuD4z2Rxim8";
+
+// --- Telegram Config ---
+const char* BOT_TOKEN = "8379144765:AAHOxIK-lwx-pMpNCl-mR8Iv3shu6gNCG-0";
+const String OWNER_CHAT_ID = "8146728406";
+
+// --- NTP Parameters ---
+const char* ntpServer = "pool.ntp.org";
+const long  gmtOffset_sec = 7 * 3600; 
+const int   daylightOffset_sec = 0;
+
+#define I2C_SDA 8
+#define I2C_SCL 9
+
+// === IR Sensor Config ===
+// เลือกใช้ 1 อย่าง: GPIO เดี่ยว หรือ PCF8574
+#define USE_PCF8574 true  // true = ใช้ PCF8574, false = ใช้ GPIO 5
+
+#if USE_PCF8574
+  // PCF8574 I/O Expander
+  PCF8574 pcf8574(0x20);  // I2C Address (เช็คด้วย I2C Scanner)
+  #define IR_SENSOR_COUNT 6
+  // P0-P5 = IR sensors สำหรับยา 6 ชนิด
+  const uint8_t IR_PINS[IR_SENSOR_COUNT] = {0, 1, 2, 3, 4, 5};
+#else
+  // GPIO เดี่ยว (โค้ดเดิม)
+  #define IR_PIN 5
+#endif
+
+#define SWITCH_PIN 6
+#define LED_PIN 2
+
+Adafruit_PWMServoDriver pca9685 = Adafruit_PWMServoDriver(0x40);
+RTC_DS3231 rtc;
+const uint8_t SERVO_CH = 0;
+
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+WiFiClientSecure secured_client;
+UniversalTelegramBot bot(BOT_TOKEN, secured_client);
+
+// --- Medicine Data ---
+String medicineName = "ยา";
+bool scheduleEnabled = false;
+
+// --- Scheduler Data (4 doses) ---
+struct TimeSlot {
+  bool active = false;
+  int hour = -1;
+  int minute = -1;
+  String timing = "none";  // "before", "after", "none"
+  String label = "";       // "เช้า-หลังอาหาร"
+};
+
+TimeSlot dose1, dose2, dose3, dose4;  // 4 มื้อ
+
+// --- Notification State ---
+struct NotificationState {
+  bool dose1_3min_sent = false;
+  bool dose2_3min_sent = false;
+  bool dose3_3min_sent = false;
+  bool dose4_3min_sent = false;
+};
+NotificationState notifState;
+
+// --- Time Sync & Connection Tracking ---
+unsigned long lastNtpSync = 0;
+const unsigned long NTP_SYNC_INTERVAL = 3600000; // 1 ชม.
+unsigned long lastConnectionCheck = 0;
+bool wasConnected = false;
+
+// --- Telegram Bot ---
+unsigned long lastBotCheck = 0;
+const unsigned long BOT_CHECK_INTERVAL = 2000; // เช็คข้อความทุก 2 วินาที
+
+// --- Function Prototypes ---
+void dispensePill(String triggerSource);
+void updateShadow(String status, String detail);
+void syncRTCWithNTP();
+void sendTelegramNotification(String message);
+String getMealLabel(int doseNum, String timing);
+
+// === GET MEAL LABEL ===
+String getMealLabel(int doseNum, String timing) {
+  const char* meals[] = {"เช้า", "กลางวัน", "เย็น", "ก่อนนอน"};
+  String meal = meals[doseNum - 1];
+  
+  if (timing == "before") return meal + "-ก่อนอาหาร";
+  if (timing == "after") return meal + "-หลังอาหาร";
+  return meal;  // ก่อนนอน
+}
+
+// === TELEGRAM FUNCTION ===
+void sendTelegramNotification(String message) {
+  if (WiFi.status() == WL_CONNECTED) {
+    bot.sendMessage(OWNER_CHAT_ID, message, "");
+    Serial.println("📱 Telegram: " + message);
+  } else {
+    Serial.println("📱 Telegram FAILED: No WiFi");
+  }
+}
+
+// --- Helper: Parse Time String "HH:MM" ---
+void parseTime(String timeStr, int &h, int &m) {
+  int splitIndex = timeStr.indexOf(':');
+  if (splitIndex != -1) {
+    h = timeStr.substring(0, splitIndex).toInt();
+    m = timeStr.substring(splitIndex + 1).toInt();
+  }
+}
+
+// --- MQTT Callback ---
+void callback(char* topic, byte* payload, unsigned int length) {
+  Serial.println("\n╔═══════════════════════════════════════╗");
+  Serial.println("║  📥 SHADOW UPDATE RECEIVED FROM WIDGET  ║");
+  Serial.println("╚═══════════════════════════════════════╝");
+  Serial.print("Topic: ");
+  Serial.println(topic);
+  
+  char msg[length + 1];
+  memcpy(msg, payload, length);
+  msg[length] = '\0';
+  Serial.println(msg);
+
+  JsonDocument doc;
+  DeserializationError error = deserializeJson(doc, msg);
+
+  if (error) {
+    Serial.print("deserializeJson() failed: ");
+    Serial.println(error.c_str());
+    return;
+  }
+
+  // --- 1. รับชื่อยา ---
+  if (doc["data"]["medicineName"].is<const char*>()) {
+    medicineName = doc["data"]["medicineName"].as<String>();
+    Serial.printf(">>> Medicine Name: %s\n", medicineName.c_str());
+  }
+
+  // --- 2. รับคำสั่งจ่ายทันที ---
+  if (doc["data"]["dispenseNow"] == 1) {
+    Serial.println(">>> Command: DISPENSE NOW!");
+    dispensePill("Manual - " + medicineName);
+    return;
+  }
+
+  // --- 3. รับสถานะเปิด/ปิด ---
+  if (doc["data"]["scheduleEnabled"].is<int>()) {
+    scheduleEnabled = (doc["data"]["scheduleEnabled"].as<int>() == 1);
+    Serial.printf(">>> Schedule: %s\n", scheduleEnabled ? "ENABLED" : "DISABLED");
+  }
+
+  // --- 4. รับตารางเวลา Dose 1 ---
+  if (doc["data"]["dose1_time"].is<const char*>()) {
+    String timeStr = doc["data"]["dose1_time"].as<String>();
+    parseTime(timeStr, dose1.hour, dose1.minute);
+    dose1.timing = doc["data"]["dose1_timing"].as<String>();
+    dose1.label = getMealLabel(1, dose1.timing);
+    dose1.active = true;
+    Serial.printf(">>> Dose 1: %02d:%02d - %s\n", dose1.hour, dose1.minute, dose1.label.c_str());
+  }
+
+  // --- 5. รับตารางเวลา Dose 2 ---
+  if (doc["data"]["dose2_time"].is<const char*>()) {
+    String timeStr = doc["data"]["dose2_time"].as<String>();
+    parseTime(timeStr, dose2.hour, dose2.minute);
+    dose2.timing = doc["data"]["dose2_timing"].as<String>();
+    dose2.label = getMealLabel(2, dose2.timing);
+    dose2.active = true;
+    Serial.printf(">>> Dose 2: %02d:%02d - %s\n", dose2.hour, dose2.minute, dose2.label.c_str());
+  }
+
+  // --- 6. รับตารางเวลา Dose 3 ---
+  if (doc["data"]["dose3_time"].is<const char*>()) {
+    String timeStr = doc["data"]["dose3_time"].as<String>();
+    parseTime(timeStr, dose3.hour, dose3.minute);
+    dose3.timing = doc["data"]["dose3_timing"].as<String>();
+    dose3.label = getMealLabel(3, dose3.timing);
+    dose3.active = true;
+    Serial.printf(">>> Dose 3: %02d:%02d - %s\n", dose3.hour, dose3.minute, dose3.label.c_str());
+  }
+
+  // --- 7. รับตารางเวลา Dose 4 ---
+  if (doc["data"]["dose4_time"].is<const char*>()) {
+    String timeStr = doc["data"]["dose4_time"].as<String>();
+    parseTime(timeStr, dose4.hour, dose4.minute);
+    dose4.timing = "none";
+    dose4.label = getMealLabel(4, dose4.timing);
+    dose4.active = true;
+    Serial.printf(">>> Dose 4: %02d:%02d - %s\n", dose4.hour, dose4.minute, dose4.label.c_str());
+  }
+
+  // --- 8. ส่งข้อมูลกลับไป Shadow ---
+  if (client.connected()) {
+    JsonDocument responseDoc;
+    
+    responseDoc["data"]["medicineName"] = medicineName;
+    responseDoc["data"]["scheduleEnabled"] = scheduleEnabled ? 1 : 0;
+    
+    if (dose1.active) {
+      String time1 = String(dose1.hour) + ":" + (dose1.minute < 10 ? "0" : "") + String(dose1.minute);
+      responseDoc["data"]["dose1_time"] = time1;
+      responseDoc["data"]["dose1_timing"] = dose1.timing;
+    }
+    
+    if (dose2.active) {
+      String time2 = String(dose2.hour) + ":" + (dose2.minute < 10 ? "0" : "") + String(dose2.minute);
+      responseDoc["data"]["dose2_time"] = time2;
+      responseDoc["data"]["dose2_timing"] = dose2.timing;
+    }
+    
+    if (dose3.active) {
+      String time3 = String(dose3.hour) + ":" + (dose3.minute < 10 ? "0" : "") + String(dose3.minute);
+      responseDoc["data"]["dose3_time"] = time3;
+      responseDoc["data"]["dose3_timing"] = dose3.timing;
+    }
+    
+    if (dose4.active) {
+      String time4 = String(dose4.hour) + ":" + (dose4.minute < 10 ? "0" : "") + String(dose4.minute);
+      responseDoc["data"]["dose4_time"] = time4;
+    }
+    
+    DateTime now = rtc.now();
+    char timeStr[20];
+    sprintf(timeStr, "%04d-%02d-%02d %02d:%02d:%02d", 
+            now.year(), now.month(), now.day(), 
+            now.hour(), now.minute(), now.second());
+    responseDoc["data"]["time"] = timeStr;
+    
+    String output;
+    serializeJson(responseDoc, output);
+    client.publish("@shadow/data/update", output.c_str(), true);
+    
+    Serial.println("\n┌─────────────── 📋 SUMMARY ───────────────┐");
+    Serial.printf("│ Medicine: %s\n", medicineName.c_str());
+    Serial.printf("│ Schedule: %s\n", scheduleEnabled ? "🟢 ON" : "🔴 OFF");
+    if (dose1.active) Serial.printf("│ Dose 1: %02d:%02d - %s\n", dose1.hour, dose1.minute, dose1.label.c_str());
+    if (dose2.active) Serial.printf("│ Dose 2: %02d:%02d - %s\n", dose2.hour, dose2.minute, dose2.label.c_str());
+    if (dose3.active) Serial.printf("│ Dose 3: %02d:%02d - %s\n", dose3.hour, dose3.minute, dose3.label.c_str());
+    if (dose4.active) Serial.printf("│ Dose 4: %02d:%02d - %s\n", dose4.hour, dose4.minute, dose4.label.c_str());
+    Serial.printf("│ Updated: %s\n", timeStr);
+    Serial.println("└──────────────────────────────────────────┘");
+  }
+}
+
+void syncRTCWithNTP() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  
+  Serial.println("Syncing RTC with NTP...");
+  struct tm timeinfo;
+  if(getLocalTime(&timeinfo, 10000)) {
+     rtc.adjust(DateTime(timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday, 
+                         timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec));
+     lastNtpSync = millis();
+     Serial.println("✓ NTP Sync Success!");
+     
+     DateTime now = rtc.now();
+     char timeStr[20];
+     sprintf(timeStr, "%04d-%02d-%02d %02d:%02d:%02d", 
+             now.year(), now.month(), now.day(), 
+             now.hour(), now.minute(), now.second());
+     updateShadow("time_synced", String(timeStr));
+  } else {
+     Serial.println("✗ NTP Sync Failed");
+  }
+}
+
+void connectNETPIE() {
+  int retry = 0;
+  while (!client.connected() && retry < 3) {
+    Serial.print("Connecting to NETPIE...");
+    if (client.connect(mqtt_client_id, mqtt_token, mqtt_secret)) {
+      Serial.println("Connected!");
+      
+      client.subscribe("@shadow/data/updated");
+      client.subscribe("@msg/command");
+      
+      Serial.println("Requesting Shadow data...");
+      client.publish("@shadow/data/get", "");
+      
+      syncRTCWithNTP();
+      
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try 2s");
+      delay(2000);
+      retry++;
+    }
+  }
+}
+
+void setup() {
+  Wire.begin(I2C_SDA, I2C_SCL);
+  Serial.begin(115200);
+  delay(1000);
+  
+  Serial.println("\n=== ESP32 Medicine Dispenser ===");
+  
+  // === Init PCF8574 (ถ้าใช้) ===
+  #if USE_PCF8574
+    Serial.println("Initializing PCF8574...");
+    pcf8574.begin();
+    
+    // ตั้งค่า IR sensors เป็น INPUT_PULLUP
+    for(int i = 0; i < IR_SENSOR_COUNT; i++) {
+      pcf8574.pinMode(IR_PINS[i], INPUT_PULLUP);
+    }
+    
+    Serial.printf("✓ PCF8574 ready with %d IR sensors\n", IR_SENSOR_COUNT);
+  #else
+    pinMode(IR_PIN, INPUT);
+    Serial.println("✓ IR Sensor on GPIO 5");
+  #endif
+  
+  pinMode(SWITCH_PIN, INPUT_PULLUP);
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, LOW);
+  Wire.setClock(100000); 
+  
+  if (!pca9685.begin()) Serial.println("(!) PCA9685 Not Found");
+  else pca9685.setPWMFreq(50);
+
+  if (!rtc.begin()) {
+    Serial.println("Couldn't find RTC");
+  } else {
+    Serial.println("RTC found!");
+  }
+
+  DateTime now = rtc.now();
+  Serial.print("Current RTC Time: ");
+  Serial.print(now.year(), DEC);
+  Serial.print('/');
+  Serial.print(now.month(), DEC);
+  Serial.print('/');
+  Serial.print(now.day(), DEC);
+  Serial.print(' ');
+  Serial.print(now.hour(), DEC);
+  Serial.print(':');
+  Serial.print(now.minute(), DEC);
+  Serial.print(':');
+  Serial.println(now.second(), DEC);
+
+  Serial.println("Connecting WiFi...");
+  WiFi.begin(ssid, password);
+  
+  int wifi_retry = 0;
+  while (WiFi.status() != WL_CONNECTED && wifi_retry < 20) {
+    delay(500);
+    Serial.print(".");
+    wifi_retry++;
+  }
+  
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\nWiFi Connected!");
+    Serial.print("IP: ");
+    Serial.println(WiFi.localIP());
+    
+    configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+    Serial.println("Waiting for NTP sync...");
+    
+    struct tm timeinfo;
+    if(getLocalTime(&timeinfo, 10000)) {
+       Serial.println("NTP Sync Success! Updating RTC...");
+       rtc.adjust(DateTime(timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday, 
+                           timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec));
+       
+       DateTime newTime = rtc.now();
+       Serial.print("New RTC Time: ");
+       Serial.print(newTime.year(), DEC);
+       Serial.print('/');
+       Serial.print(newTime.month(), DEC);
+       Serial.print('/');
+       Serial.print(newTime.day(), DEC);
+       Serial.print(' ');
+       Serial.print(newTime.hour(), DEC);
+       Serial.print(':');
+       Serial.print(newTime.minute(), DEC);
+       Serial.print(':');
+       Serial.println(newTime.second(), DEC);
+    } else {
+       Serial.println("NTP Sync Failed - Using RTC time");
+    }
+    
+    // === TELEGRAM SETUP ===
+    secured_client.setInsecure();
+    sendTelegramNotification("🟢 ระบบออนไลน์: " + medicineName);
+    wasConnected = true;
+    
+  } else {
+    Serial.println("\nWiFi Failed - Using RTC time");
+    wasConnected = false;
+  }
+  
+  client.setServer(mqtt_broker, mqtt_port);
+  client.setCallback(callback);
+  
+  Serial.println("--- READY ---");
+}
+
+uint16_t getPwm(int angle) {
+  angle = constrain(angle, 0, 180);
+  long us = map(angle, 0, 180, 500, 2500);
+  return (uint16_t)((us * 4096L) / 20000L);
+}
+
+void setServo(int angle) {
+  pca9685.setPWM(SERVO_CH, 0, getPwm(angle));
+}
+
+void updateShadow(String status, String detail) {
+  if (!client.connected()) return;
+  
+  DateTime now = rtc.now();
+  char timeStr[20];
+  sprintf(timeStr, "%04d-%02d-%02d %02d:%02d:%02d", 
+          now.year(), now.month(), now.day(), 
+          now.hour(), now.minute(), now.second());
+  
+  String payload = "{\"data\": {";
+  payload += "\"status\": \"" + status + "\",";
+  payload += "\"detail\": \"" + detail + "\",";
+  payload += "\"time\": \"" + String(timeStr) + "\"";
+  payload += "}}";
+  client.publish("@shadow/data/update", payload.c_str());
+}
+
+// === DISPENSE PILL ===
+void dispensePill(String triggerSource) {
+  Serial.print("\n>>> Dispensing: ");
+  Serial.println(triggerSource);
+  
+  digitalWrite(LED_PIN, HIGH);
+  updateShadow("dispensing", triggerSource);
+  
+  setServo(27);
+  delay(800);
+  
+  bool detected = false;
+  
+  #if USE_PCF8574
+    // อ่านจาก PCF8574 (รองรับหลาย sensors)
+    Serial.println("Checking IR sensors (PCF8574)...");
+    for(int i=0; i<20; i++) {
+      uint8_t values = pcf8574.read8();  // อ่านทั้ง 8 pins พร้อมกัน
+      
+      // ตรวจสอบว่ามี sensor ไหนตรวจพบ (LOW = detected)
+      for(int s = 0; s < IR_SENSOR_COUNT; s++) {
+        if(bitRead(values, IR_PINS[s]) == 0) {
+          Serial.printf("  ✓ IR Sensor P%d detected pill!\n", IR_PINS[s]);
+          detected = true;
+          break;
+        }
+      }
+      
+      if(detected) break;
+      delay(10);
+    }
+  #else
+    // อ่านจาก GPIO เดี่ยว (โค้ดเดิม)
+    Serial.println("Checking IR sensor (GPIO 5)...");
+    for(int i=0; i<20; i++) {
+      if(digitalRead(IR_PIN) == LOW) {
+        detected = true;
+        Serial.println("  ✓ IR detected pill!");
+        break;
+      }
+      delay(10);
+    }
+  #endif
+  
+  setServo(0);
+  delay(1000);
+  delay(2000);
+
+  DateTime now = rtc.now();
+  char timeStr[10];
+  sprintf(timeStr, "%02d:%02d", now.hour(), now.minute());
+
+  if (detected) {
+    Serial.println(">>> SUCCESS: Pill Detected");
+    updateShadow("success", "OK");
+    sendTelegramNotification("✅ จ่ายสำเร็จ: " + triggerSource + " (" + String(timeStr) + ")");
+  } else {
+    Serial.println(">>> EMPTY: No Pill");
+    updateShadow("empty", "No pill");
+    sendTelegramNotification("❌ จ่ายไม่สำเร็จ - ยาหมด: " + triggerSource + " (" + String(timeStr) + ")");
+  }
+  
+  digitalWrite(LED_PIN, LOW);
+}
+
+// === HANDLE TELEGRAM MESSAGES ===
+void handleTelegramMessages() {
+  int numNewMessages = bot.getUpdates(bot.last_message_received + 1);
+  
+  for (int i = 0; i < numNewMessages; i++) {
+    String chat_id = String(bot.messages[i].chat_id);
+    String text = bot.messages[i].text;
+    
+    Serial.println("📱 Received: " + text);
+    
+    // ตรวจสอบว่าเป็น owner
+    if (chat_id != OWNER_CHAT_ID) {
+      bot.sendMessage(chat_id, "⛔ Unauthorized", "");
+      continue;
+    }
+    
+    // คำสั่ง /schedule หรือ /check
+    if (text == "/schedule" || text == "/check") {
+      String response = "💊 *" + medicineName + "*\n";
+      response += "━━━━━━━━━━━━━━━━\n";
+      response += scheduleEnabled ? "🟢 เปิดใช้งาน\n\n" : "🔴 ปิดใช้งาน\n\n";
+      
+      if (dose1.active) {
+        response += "🌅 เช้า: " + String(dose1.hour) + ":" + (dose1.minute < 10 ? "0" : "") + String(dose1.minute);
+        response += " (" + dose1.label + ")\n";
+      }
+      
+      if (dose2.active) {
+        response += "☀️ กลางวัน: " + String(dose2.hour) + ":" + (dose2.minute < 10 ? "0" : "") + String(dose2.minute);
+        response += " (" + dose2.label + ")\n";
+      }
+      
+      if (dose3.active) {
+        response += "🌆 เย็น: " + String(dose3.hour) + ":" + (dose3.minute < 10 ? "0" : "") + String(dose3.minute);
+        response += " (" + dose3.label + ")\n";
+      }
+      
+      if (dose4.active) {
+        response += "🌙 ก่อนนอน: " + String(dose4.hour) + ":" + (dose4.minute < 10 ? "0" : "") + String(dose4.minute);
+        response += " (" + dose4.label + ")\n";
+      }
+      
+      if (!dose1.active && !dose2.active && !dose3.active && !dose4.active) {
+        response += "ยังไม่มีตารางการจ่ายยา";
+      }
+      
+      bot.sendMessage(chat_id, response, "Markdown");
+    }
+    
+    // คำสั่ง /help
+    else if (text == "/help" || text == "/start") {
+      String response = "🤖 *คำสั่งที่ใช้ได้:*\n\n";
+      response += "/schedule - ดูตารางการจ่ายยา\n";
+      response += "/check - เช็คตารางการจ่ายยา\n";
+      response += "/help - แสดงคำสั่งนี้\n";
+      bot.sendMessage(chat_id, response, "Markdown");
+    }
+    
+    // คำสั่งไม่รู้จัก
+    else {
+      bot.sendMessage(chat_id, "❓ ไม่เข้าใจคำสั่ง พิมพ์ /help เพื่อดูคำสั่งที่ใช้ได้", "");
+    }
+  }
+}
+
+// === CHECK SCHEDULE (4 doses with 3-min warning) ===
+void checkSchedule() {
+  if (!scheduleEnabled) return;
+  
+  DateTime now = rtc.now();
+  int h = now.hour();
+  int m = now.minute();
+  int s = now.second();
+
+  if (s != 0) return;
+  
+  Serial.printf("[CHECK] %02d:%02d | Schedule: %s\n", h, m, scheduleEnabled ? "ON" : "OFF");
+
+  // สร้าง array ของ 4 doses
+  TimeSlot* doses[] = {&dose1, &dose2, &dose3, &dose4};
+  bool* notifFlags[] = {&notifState.dose1_3min_sent, &notifState.dose2_3min_sent, 
+                        &notifState.dose3_3min_sent, &notifState.dose4_3min_sent};
+  
+  for (int i = 0; i < 4; i++) {
+    TimeSlot* d = doses[i];
+    if (!d->active) continue;
+    
+    int minutesUntil = (d->hour * 60 + d->minute) - (h * 60 + m);
+    
+    // แจ้งเตือน 3 นาที
+    if (minutesUntil == 3 && !(*notifFlags[i])) {
+      sendTelegramNotification("⏰ อีก 3 นาที: " + medicineName + " (" + d->label + ")");
+      *notifFlags[i] = true;
+    }
+    
+    // Reset flag
+    if (minutesUntil < 0) {
+      *notifFlags[i] = false;
+    }
+    
+    // ถึงเวลาจ่าย
+    if (h == d->hour && m == d->minute) {
+      Serial.printf(">>> TIME TO DISPENSE: Dose %d\n", i+1);
+      dispensePill(medicineName + " - " + d->label);
+    }
+  }
+}
+
+void loop() {
+  // === ตรวจสอบ WiFi และ NETPIE ===
+  if (WiFi.status() == WL_CONNECTED) {
+    if (!client.connected()) connectNETPIE();
+    client.loop();
+    
+    if (millis() - lastNtpSync > NTP_SYNC_INTERVAL) {
+      syncRTCWithNTP();
+    }
+  }
+
+  // === ตรวจสอบการเชื่อมต่อ (Online/Offline) ===
+  if (millis() - lastConnectionCheck > 30000) {  // ทุก 30 วินาที
+    bool isConnected = (WiFi.status() == WL_CONNECTED);
+    
+    if (!wasConnected && isConnected) {
+      // เพิ่งเชื่อมกลับ
+      sendTelegramNotification("🟢 ระบบกลับมาออนไลน์: " + medicineName);
+      Serial.println("🟢 Back Online!");
+    } else if (wasConnected && !isConnected) {
+      // เพิ่งขาดการเชื่อมต่อ
+      Serial.println("⚠️ WiFi Disconnected!");
+    }
+    
+    wasConnected = isConnected;
+    lastConnectionCheck = millis();
+  }
+
+  // === เช็ค Telegram Messages ===
+  if (WiFi.status() == WL_CONNECTED && millis() - lastBotCheck > BOT_CHECK_INTERVAL) {
+    handleTelegramMessages();
+    lastBotCheck = millis();
+  }
+
+  // === เช็คตารางเวลา ===
+  checkSchedule(); 
+
+  // === ปุ่มกด Manual ===
+  if (digitalRead(SWITCH_PIN) == LOW) {
+    delay(100);
+    if (digitalRead(SWITCH_PIN) == LOW) {
+      delay(50);
+      if (digitalRead(SWITCH_PIN) == LOW) {
+        Serial.println(">>> Manual Button!");
+        dispensePill("Manual Button - " + medicineName);
+        while(digitalRead(SWITCH_PIN) == LOW) delay(10);
+        delay(100);
+      }
+    }
+  }
+  
+  delay(100);
+}
+</file>
+
+<file path="src/netpie.cpp">
+#include "netpie.h"
+#include "config.h"
+#include "secrets.h"
+#include "logging.h"
+#include <WiFi.h>
+#include <ArduinoJson.h>
+
+// ============================================
+// NETPIE MQTT Implementation
+// ============================================
+
+WiFiClient espClient;
+PubSubClient mqttClient(espClient);
+bool netpieConnected = false;
+
+// Callbacks
+static ScheduleCallback onScheduleUpdate = nullptr;
+static DispenseCallback onDispenseCommand = nullptr;
+
+// --- Set Callbacks ---
+void setScheduleCallback(ScheduleCallback callback) {
+  onScheduleUpdate = callback;
+}
+
+void setDispenseCallback(DispenseCallback callback) {
+  onDispenseCommand = callback;
+}
+
+// --- MQTT Callback ---
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  LOG_DEBUG("[NETPIE] Message arrived [%s]", topic);
+  
+  char msg[length + 1];
+  memcpy(msg, payload, length);
+  msg[length] = '\0';
+  
+  JsonDocument doc;
+  DeserializationError error = deserializeJson(doc, msg);
+  
+  if (error) {
+    LOG_ERROR("[NETPIE] JSON parse failed: %s", error.c_str());
+    return;
+  }
+  
+  // ตรวจสอบคำสั่ง Dispense (รองรับทั้ง dispenseCommand และ dispenseNow)
+  if (doc["action"] == "dispense" || 
+      doc["data"]["dispenseCommand"] == 1 || 
+      doc["data"]["dispenseNow"] == 1) {
+    LOG_INFO("[NETPIE] >>> DISPENSE COMMAND");
+    if (onDispenseCommand) {
+      onDispenseCommand("NETPIE Command");
+    }
+    return;
+  }
+  
+  // ตรวจสอบการอัปเดตตารางเวลา
+  if (doc["data"].is<JsonObject>() && onScheduleUpdate) {
+    LOG_INFO("[NETPIE] >>> Schedule Update");
+    onScheduleUpdate(doc);
+  }
+}
+
+// --- Setup ---
+void netpieSetup() {
+  mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
+  mqttClient.setCallback(mqttCallback);
+  LOG_INFO("[NETPIE] Setup complete");
+}
+
+// --- Connect ---
+static bool shadowRequested = false;  // Flag เพื่อขอ shadow แค่ครั้งแรก
+
+void netpieConnect() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  if (mqttClient.connected()) return;
+  
+  LOG_INFO("[NETPIE] Connecting...");
+  
+  // Clean session = true เพื่อหลีกเลี่ยง message ค้าง
+  if (mqttClient.connect(MQTT_CLIENT_ID, MQTT_TOKEN, MQTT_SECRET)) {
+    LOG_INFO("[NETPIE] Connected!");
+    netpieConnected = true;
+    
+    // Subscribe topics
+    mqttClient.subscribe("@shadow/data/updated");
+    mqttClient.subscribe("@shadow/data/get/response");
+    mqttClient.subscribe("@msg/command");
+    
+    // Request shadow เฉพาะครั้งแรกเท่านั้น
+    if (!shadowRequested) {
+      LOG_INFO("[NETPIE] Requesting initial shadow...");
+      mqttClient.publish("@shadow/data/get", "");
+      shadowRequested = true;
+    }
+    
+  } else {
+    LOG_ERROR("[NETPIE] Failed, rc=%d", mqttClient.state());
+    netpieConnected = false;
+  }
+}
+
+// --- Loop (non-blocking) ---
+void netpieLoop() {
+  static unsigned long lastReconnect = 0;
+  
+  if (!mqttClient.connected()) {
+    netpieConnected = false;
+    
+    // Reconnect ทุก 5 วินาที (non-blocking)
+    if (millis() - lastReconnect > 5000) {
+      netpieConnect();
+      lastReconnect = millis();
+    }
+  } else {
+    mqttClient.loop();
+  }
+}
+
+// --- Update Shadow ---
+void updateShadow(String status, String detail) {
+  if (!mqttClient.connected()) return;
+  
+  static char buffer[256];
+  snprintf(buffer, sizeof(buffer), 
+    "{\"data\":{\"status\":\"%s\",\"detail\":\"%s\"}}",
+    status.c_str(), detail.c_str());
+  
+  mqttClient.publish("@shadow/data/update", buffer);
+  LOG_DEBUG("[NETPIE] Shadow updated: %s", status.c_str());
+}
+</file>
+
+<file path="src/offline_module.cpp">
+#include "offline_module.h"
+#include "wifi_module.h"
+#include "netpie.h"
+#include "config.h"
+#include "logging.h"
+#include "scheduler.h" // For rtc
+#include <vector>
+
+struct OfflineEvent {
+  unsigned long timestamp;
+  String eventType;
+  String data;
+};
+
+static std::vector<OfflineEvent> offlineQueue;
+
+// Helper to access RTC from scheduler (extern in scheduler.h usually, or we need to access it)
+// We need to make sure 'rtc' is accessible or include "scheduler.h" and ensure rtc is declared external there.
+// Checking scheduler.cpp/h... main.cpp included "scheduler.h".
+// Let's assume scheduler.h declares `extern RTC_DS3231 rtc;` or similar. 
+// If not, we might need timestamp from other source.
+// But scheduler.cpp has `RTC_DS3231 rtc;`.
+// We should check scheduler.h content first or ensure it is extern.
+// For now, I will use rtc.now() assuming it's available via scheduler.h
+// Let's verify scheduler.h in next step if compilation fails, but based on main.cpp usage it seems rtc is available? 
+// Actually main.cpp includes scheduler.h but `rtc` was used in `addToOfflineQueue` in main.cpp.
+// `rtc` is defined in scheduler.cpp. `main.cpp` used `rtc.now()`.
+// So `scheduler.h` must have `extern RTC_DS3231 rtc;`.
+
+void offlineSetup() {
+  // Nothing specific to setup for vector
+}
+
+void addToOfflineQueue(String type, String data) {
+  if (offlineQueue.size() < 50) {
+    OfflineEvent event;
+    // We need 'rtc' object. 
+    // If rtc is not global extern, we might need a getter for timestamp.
+    // Let's try to include scheduler.h and use rtc.
+    // If that fails, we can use millis() as relative time or 0.
+    extern RTC_DS3231 rtc; 
+    
+    event.timestamp = rtc.now().unixtime();
+    event.eventType = type;
+    event.data = data;
+    offlineQueue.push_back(event);
+    LOG_DEBUG("[Offline] Queued: %s", type.c_str());
+  }
+}
+
+void syncOfflineQueue() {
+  if (!isSystemOnline() || offlineQueue.empty()) return;
+  
+  LOG_INFO("[Offline] Syncing %d queued events...", offlineQueue.size());
+  
+  for (auto& event : offlineQueue) {
+    updateShadow(event.eventType, event.data);
+    // Add small delay to prevent flooding?
+    // delay(50); // Removed for non-blocking compliance. Network stack handles this. 
+  }
+  offlineQueue.clear();
+  LOG_INFO("[Offline] Queue synced!");
+}
+
+void updateShadowOfflineAware(String status, String detail) {
+  if (!isSystemOnline()) {
+    addToOfflineQueue(status, detail);
+    return;
+  }
+  updateShadow(status, detail);
+}
+</file>
+
+<file path="src/scheduler.cpp">
+#include "scheduler.h"
+#include "config.h"
+#include "logging.h"
+#include "netpie.h"
+#include <WiFi.h>
+#include <time.h>
+
+// ============================================
+// Scheduler Implementation
+// ============================================
+
+// Schedule data (7 slots)
+TimeSlot scheduleSlots[7];
+
+
+// RTC
+RTC_DS3231 rtc;
+
+// Callback
+static ScheduleTriggerCallback onScheduleTrigger = nullptr;
+
+// Tracking
+static unsigned long lastNtpSync = 0;
+static int lastCheckedMinute = -1;
+
+void setScheduleTriggerCallback(ScheduleTriggerCallback callback) {
+  onScheduleTrigger = callback;
+}
+
+// --- Update Schedule Time ---
+void updateScheduleTime(int index, int h, int m, bool active) {
+  if (index >= 0 && index < 7) {
+    scheduleSlots[index].hour = h;
+    scheduleSlots[index].minute = m;
+    scheduleSlots[index].active = active;
+    
+    // Default labels if empty
+    if (scheduleSlots[index].label == "") {
+      switch(index) {
+        case 0: scheduleSlots[index].label = "เช้า (ก่อน)"; break;
+        case 1: scheduleSlots[index].label = "เช้า (หลัง)"; break;
+        case 2: scheduleSlots[index].label = "กลางวัน (ก่อน)"; break;
+        case 3: scheduleSlots[index].label = "กลางวัน (หลัง)"; break;
+        case 4: scheduleSlots[index].label = "เย็น (ก่อน)"; break;
+        case 5: scheduleSlots[index].label = "เย็น (หลัง)"; break;
+        case 6: scheduleSlots[index].label = "ก่อนนอน"; break;
+      }
+    }
+    LOG_INFO("[Scheduler] Updated Slot %d: %02d:%02d (%s)", index, h, m, active ? "ON" : "OFF");
+  }
+}
+
+// --- Parse Time String "HH:MM" ---
+void parseTimeString(String timeStr, int &h, int &m) {
+  int idx = timeStr.indexOf(':');
+  if (idx != -1) {
+    h = timeStr.substring(0, idx).toInt();
+    m = timeStr.substring(idx + 1).toInt();
+  }
+}
+
+String formatTime(int h, int m) {
+  static char buffer[8];
+  snprintf(buffer, sizeof(buffer), "%02d:%02d", h, m);
+  return String(buffer);
+}
+
+// --- Setup ---
+void schedulerSetup() {
+  if (!rtc.begin()) {
+    LOG_ERROR("[Scheduler] RTC not found!");
+  } else {
+    LOG_INFO("[Scheduler] RTC initialized");
+    
+    DateTime now = rtc.now();
+    LOG_INFO("[Scheduler] RTC Time: %04d-%02d-%02d %02d:%02d:%02d",
+             now.year(), now.month(), now.day(),
+             now.hour(), now.minute(), now.second());
+  }
+}
+
+// --- Sync RTC with NTP (non-blocking call) ---
+void syncRTCWithNTP() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  
+  LOG_INFO("[Scheduler] Syncing RTC with NTP...");
+  
+  // ตั้งค่า NTP อีกครั้ง (กรณียังไม่ได้ตั้ง)
+  configTime(GMT_OFFSET_SEC, DAYLIGHT_OFFSET_SEC, NTP_SERVER);
+  
+  struct tm timeinfo;
+  
+  // ลอง 3 ครั้ง
+  for (int i = 0; i < 3; i++) {
+    if (getLocalTime(&timeinfo, 10000)) {  // timeout 10 วินาที
+      rtc.adjust(DateTime(
+        timeinfo.tm_year + 1900,
+        timeinfo.tm_mon + 1,
+        timeinfo.tm_mday,
+        timeinfo.tm_hour,
+        timeinfo.tm_min,
+        timeinfo.tm_sec
+      ));
+      lastNtpSync = millis();
+      
+      LOG_INFO("[Scheduler] NTP Sync OK: %04d-%02d-%02d %02d:%02d:%02d",
+               timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+               timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+      return;
+    }
+    LOG_WARN("[Scheduler] NTP attempt %d failed, retrying...", i + 1);
+  }
+  
+  LOG_ERROR("[Scheduler] NTP Sync Failed after 3 attempts");
+}
+
+// --- Check Schedule (non-blocking) ---
+void checkSchedule() {
+  if (!scheduleEnabled) return;
+  
+  DateTime now = rtc.now();
+  int h = now.hour();
+  int m = now.minute();
+  int s = now.second();
+  
+  // เช็คเฉพาะวินาทีที่ 0 และนาทีที่ยังไม่เช็ค
+  if (s != 0 || m == lastCheckedMinute) return;
+  lastCheckedMinute = m;
+  
+  LOG_DEBUG("[Scheduler] Checking %02d:%02d", h, m);
+  
+  // Iterate all 7 slots
+  for(int i=0; i<7; i++) {
+    if (scheduleSlots[i].active && h == scheduleSlots[i].hour && m == scheduleSlots[i].minute) {
+      LOG_INFO("[Scheduler] >>> SLOT %d TRIGGERED (%s)", i, scheduleSlots[i].label.c_str());
+      if (onScheduleTrigger) onScheduleTrigger(i, scheduleSlots[i].label);
+    }
+  }
+}
+
+// --- Scheduler Loop (non-blocking) ---
+void schedulerLoop() {
+  // NTP sync ทุก 1 ชั่วโมง
+  if (millis() - lastNtpSync > NTP_SYNC_INTERVAL) {
+    syncRTCWithNTP();
+  }
+  
+  // เช็คตารางเวลา
+  checkSchedule();
+}
+</file>
+
+<file path="src/telegram.cpp">
+#include "telegram.h"
+#include "config.h"
+#include "secrets.h"
+#include "logging.h"
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <UniversalTelegramBot.h>
+
+// ============================================
+// Telegram Bot Implementation
+// ============================================
+
+WiFiClientSecure securedClient;
+UniversalTelegramBot bot(BOT_TOKEN, securedClient);
+
+static TelegramCommandCallback onTelegramCommand = nullptr;
+static unsigned long lastBotCheck = 0;
+
+void setTelegramCommandCallback(TelegramCommandCallback callback) {
+  onTelegramCommand = callback;
+}
+
+// --- Setup ---
+void telegramSetup() {
+  securedClient.setInsecure();
+  LOG_INFO("[Telegram] Bot initialized");
+}
+
+// --- Send Notification ---
+void sendTelegramNotification(String message) {
+  if (WiFi.status() != WL_CONNECTED) {
+    LOG_WARN("[Telegram] No WiFi, message not sent");
+    return;
+  }
+  
+  LOG_DEBUG("[Telegram] Sending: %s", message.c_str());
+  
+  if (bot.sendMessage(OWNER_CHAT_ID, message, "")) {
+    LOG_INFO("[Telegram] Message sent OK");
+  } else {
+    LOG_ERROR("[Telegram] Failed to send message");
+  }
+}
+
+// --- Handle Incoming Messages ---
+void handleTelegramMessages() {
+  int numNewMessages = bot.getUpdates(bot.last_message_received + 1);
+  
+  while (numNewMessages) {
+    for (int i = 0; i < numNewMessages; i++) {
+      String chatId = String(bot.messages[i].chat_id);
+      String text = bot.messages[i].text;
+      
+      LOG_INFO("[Telegram] From %s: %s", chatId.c_str(), text.c_str());
+      
+      // เฉพาะ owner เท่านั้น
+      if (chatId == OWNER_CHAT_ID && onTelegramCommand) {
+        onTelegramCommand(text);
+      }
+    }
+    numNewMessages = bot.getUpdates(bot.last_message_received + 1);
+  }
+}
+
+// --- Loop (non-blocking) ---
+void telegramLoop() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  
+  if (millis() - lastBotCheck > BOT_CHECK_INTERVAL) {
+    handleTelegramMessages();
+    lastBotCheck = millis();
+  }
+}
+</file>
+
+<file path="src/wifi_module.cpp">
+#include "wifi_module.h"
+#include "config.h"
+#include "logging.h"
+#include "offline_module.h" // For syncOfflineQueue
+#include <WiFi.h>
+#include <WiFiManager.h>
+
+static bool _isOnline = false;
+WiFiManager wifiManager;
+
+bool isSystemOnline() {
+  return _isOnline;
+}
+
+void wifiSetup() {
+  LOG_INFO("[WiFi] Starting WiFi Manager...");
+  
+  wifiManager.setConfigPortalTimeout(120);
+  wifiManager.setConnectTimeout(30);
+  
+  if (!wifiManager.autoConnect(WIFI_AP_NAME)) {
+    LOG_WARN("[WiFi] Failed, running in OFFLINE mode");
+    _isOnline = false;
+    return;
+  }
+  
+  _isOnline = true;
+  LOG_INFO("[WiFi] Connected! IP: %s", WiFi.localIP().toString().c_str());
+}
+
+void resetWiFi() {
+  LOG_WARN("[WiFi] Resetting WiFi settings...");
+  wifiManager.resetSettings();
+  ESP.restart();
+}
+
+String getWiFiSSID() {
+  return WiFi.SSID();
+}
+
+void checkConnectivity() {
+  static unsigned long lastCheck = 0;
+  if (millis() - lastCheck < CONNECTION_CHECK_INTERVAL) return;
+  lastCheck = millis();
+  
+  bool wasOnline = _isOnline;
+  _isOnline = (WiFi.status() == WL_CONNECTED);
+  
+  if (!wasOnline && _isOnline) {
+    LOG_INFO("[WiFi] Reconnected!");
+    syncOfflineQueue();
+  } else if (wasOnline && !_isOnline) {
+    LOG_WARN("[WiFi] Disconnected, entering OFFLINE mode");
+  }
+}
+</file>
+
+<file path="test/i2c_scanner.cpp">
+#include <Arduino.h>
+#include <Wire.h>
+
+#define I2C_SDA 8
+#define I2C_SCL 9
+
+void setup() {
+  Serial.begin(115200);
+  delay(2000);
+  
+  Serial.println("\n=== I2C Scanner ===");
+  Serial.println("Scanning I2C bus...\n");
+  
+  Wire.begin(I2C_SDA, I2C_SCL);
+  
+  byte count = 0;
+  
+  for (byte address = 1; address < 127; address++) {
+    Wire.beginTransmission(address);
+    byte error = Wire.endTransmission();
+    
+    if (error == 0) {
+      Serial.print("I2C device found at address 0x");
+      if (address < 16) Serial.print("0");
+      Serial.print(address, HEX);
+      
+      // แสดงชื่ออุปกรณ์ที่รู้จัก
+      Serial.print(" (");
+      if (address == 0x20 || address == 0x27) Serial.print("PCF8574");
+      else if (address == 0x40) Serial.print("PCA9685");
+      else if (address == 0x68) Serial.print("DS3231 RTC");
+      else Serial.print("Unknown");
+      Serial.println(")");
+      
+      count++;
+    }
+  }
+  
+  Serial.println("------------------");
+  if (count == 0) {
+    Serial.println("No I2C devices found!");
+  } else {
+    Serial.print("Found ");
+    Serial.print(count);
+    Serial.println(" device(s)");
+  }
+  
+  Serial.println("\n=== Scan Complete ===");
+  Serial.println("Upload your main code now.");
+}
+
+void loop() {
+  // ไม่ต้องทำอะไร
+}
+</file>
+
+<file path="test/README">
+This directory is intended for PlatformIO Test Runner and project tests.
+
+Unit Testing is a software testing method by which individual units of
+source code, sets of one or more MCU program modules together with associated
+control data, usage procedures, and operating procedures, are tested to
+determine whether they are fit for use. Unit testing finds problems early
+in the development cycle.
+
+More information about PlatformIO Unit Testing:
+- https://docs.platformio.org/en/latest/advanced/unit-testing/index.html
+</file>
+
+<file path="timerwidget.txt">
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Segoe UI', Tahoma, sans-serif;
+            padding: 15px;
+        }
+        .card {
+            background: linear-gradient(145deg, #1a2744, #0d1526);
+            border-radius: 20px;
+            padding: 24px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5), 0 0 40px rgba(46, 213, 115, 0.05), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            max-width: 380px;
+            margin: 0 auto;
+        }
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 24px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        }
+        .title-wrap {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .icon {
+            font-size: 32px;
+            filter: drop-shadow(0 4px 8px rgba(255, 200, 0, 0.3));
+        }
+        .title {
+            color: #fff;
+            font-size: 20px;
+            font-weight: 700;
+            letter-spacing: -0.5px;
+        }
+        .status-text {
+            font-size: 12px;
+            margin-top: 3px;
+            font-weight: 500;
+        }
+        .status-text.on {
+            color: #2ed573;
+            text-shadow: 0 0 10px rgba(46, 213, 115, 0.5);
+        }
+        .status-text.off {
+            color: #8892b0;
+        }
+        .toggle {
+            position: relative;
+            width: 54px;
+            height: 28px;
+        }
+        .toggle input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            inset: 0;
+            background: #2a3a5a;
+            border-radius: 28px;
+            transition: 0.4s;
+            box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.3);
+        }
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 22px;
+            width: 22px;
+            left: 3px;
+            bottom: 3px;
+            background: linear-gradient(145deg, #fff, #e0e0e0);
+            border-radius: 50%;
+            transition: 0.4s;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+        }
+        input:checked+.slider {
+            background: linear-gradient(135deg, #2ed573, #20bf6b);
+            box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.2), 0 0 20px rgba(46, 213, 115, 0.3);
+        }
+        input:checked+.slider:before {
+            transform: translateX(26px);
+        }
+        .schedule-box {
+            background: linear-gradient(145deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.02));
+            border-radius: 16px;
+            padding: 18px;
+            margin-bottom: 14px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+        }
+        .schedule-title {
+            font-size: 14px;
+            font-weight: 600;
+            margin-bottom: 14px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .schedule-title.on {
+            color: #2ed573;
+            text-shadow: 0 0 8px rgba(46, 213, 115, 0.4);
+        }
+        .schedule-title.off {
+            color: #ff6b6b;
+            text-shadow: 0 0 8px rgba(255, 107, 107, 0.4);
+        }
+        .row {
+            display: flex;
+            gap: 12px;
+            align-items: flex-end;
+        }
+        .field {
+            flex: 1;
+        }
+        .field-label {
+            color: #8892b0;
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 6px;
+            display: block;
+        }
+        
+        /* ===== FIXED: Input & Select Styles ===== */
+        select,
+        input[type="time"] {
+            width: 100%;
+            height: 48px;
+            padding: 0 14px;
+            border-radius: 10px;
+            border: 2px solid rgba(255, 255, 255, 0.2);
+            background: #1e2d46;
+            color: #fff;
+            font-size: 15px;
+            font-weight: 600;
+            font-family: 'Segoe UI', Tahoma, sans-serif;
+            line-height: 48px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+            transition: all 0.3s;
+            -webkit-appearance: none;
+            -moz-appearance: none;
+            appearance: none;
+        }
+        
+        /* Fix for time input text alignment */
+        input[type="time"] {
+            text-align: center;
+            line-height: normal;
+            display: flex;
+            align-items: center;
+        }
+        
+        /* Fix for select dropdown arrow */
+        select {
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23fff' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 12px center;
+            padding-right: 36px;
+        }
+        
+        select:focus,
+        input[type="time"]:focus {
+            outline: none;
+            border-color: #2ed573;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3), 0 0 16px rgba(46, 213, 115, 0.2);
+        }
+        
+        select option {
+            background: #1a2744;
+            color: #fff;
+            padding: 10px;
+        }
+        
+        /* WebKit fix for time input */
+        input[type="time"]::-webkit-datetime-edit {
+            display: flex;
+            align-items: center;
+            padding: 0;
+        }
+        input[type="time"]::-webkit-datetime-edit-fields-wrapper {
+            display: flex;
+            align-items: center;
+        }
+        input[type="time"]::-webkit-calendar-picker-indicator {
+            filter: invert(1);
+            cursor: pointer;
+        }
+        
+        .btn-save {
+            width: 100%;
+            padding: 16px;
+            border-radius: 14px;
+            border: none;
+            background: linear-gradient(135deg, #2ed573, #20bf6b);
+            color: #fff;
+            font-size: 15px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.3s;
+            box-shadow: 0 8px 24px rgba(46, 213, 115, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+            text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+            letter-spacing: 0.5px;
+        }
+        .btn-save:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 12px 32px rgba(46, 213, 115, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+        }
+        .btn-save:active {
+            transform: translateY(-1px);
+        }
+        .hint {
+            color: #5c6a80;
+            font-size: 11px;
+            text-align: center;
+            margin-top: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="header">
+            <div class="title-wrap">
+                <span class="icon">💡</span>
+                <div>
+                    <div class="title">Light Timer</div>
+                    <div class="status-text off" id="statusText">⚪ Manual Mode</div>
+                </div>
+            </div>
+            <label class="toggle">
+                <input type="checkbox" id="lightEnabled" onchange="toggleLight()">
+                <span class="slider"></span>
+            </label>
+        </div>
+        <!-- ON Schedule -->
+        <div class="schedule-box">
+            <div class="schedule-title on">🟢 Turn ON</div>
+            <div class="row">
+                <div class="field">
+                    <span class="field-label">Day</span>
+                    <select id="onDay">
+                        <option value="0">Sunday</option>
+                        <option value="1">Monday</option>
+                        <option value="2">Tuesday</option>
+                        <option value="3">Wednesday</option>
+                        <option value="4">Thursday</option>
+                        <option value="5">Friday</option>
+                        <option value="6">Saturday</option>
+                    </select>
+                </div>
+                <div class="field">
+                    <span class="field-label">Time</span>
+                    <input type="time" id="onTime" value="06:00">
+                </div>
+            </div>
+        </div>
+        <!-- OFF Schedule -->
+        <div class="schedule-box">
+            <div class="schedule-title off">🔴 Turn OFF</div>
+            <div class="row">
+                <div class="field">
+                    <span class="field-label">Day</span>
+                    <select id="offDay">
+                        <option value="0">Sunday</option>
+                        <option value="1">Monday</option>
+                        <option value="2">Tuesday</option>
+                        <option value="3">Wednesday</option>
+                        <option value="4">Thursday</option>
+                        <option value="5">Friday</option>
+                        <option value="6">Saturday</option>
+                    </select>
+                </div>
+                <div class="field">
+                    <span class="field-label">Time</span>
+                    <input type="time" id="offTime" value="18:00">
+                </div>
+            </div>
+        </div>
+        <button class="btn-save" id="btnSave" onclick="saveSchedule()">💾 Save Schedule</button>
+        <div class="hint">Example: Mon 16:00 → Sun 16:00 = 6 days ON</div>
+    </div>
+    <script>
+        var currentEnabled = ${#["Esp32s3"]["shadow"]["lightEnabled"]};
+        var currentOnDay = ${#["Esp32s3"]["shadow"]["lightOnDay"]};
+        var currentOnTime = "${#["Esp32s3"]["shadow"]["lightOnTime"]}";
+        var currentOffDay = ${#["Esp32s3"]["shadow"]["lightOffDay"]};
+        var currentOffTime = "${#["Esp32s3"]["shadow"]["lightOffTime"]}";
+        
+        function initFromShadow() {
+            document.getElementById('lightEnabled').checked = (currentEnabled == 1);
+            updateStatusText(currentEnabled == 1);
+            document.getElementById('onDay').value = (!isNaN(currentOnDay)) ? currentOnDay : 1;
+            document.getElementById('onTime').value = (currentOnTime && currentOnTime != "undefined") ? currentOnTime : "06:00";
+            document.getElementById('offDay').value = (!isNaN(currentOffDay)) ? currentOffDay : 0;
+            document.getElementById('offTime').value = (currentOffTime && currentOffTime != "undefined") ? currentOffTime : "18:00";
+        }
+        
+        function updateStatusText(enabled) {
+            var el = document.getElementById('statusText');
+            el.textContent = enabled ? '🟢 Schedule Active' : '⚪ Manual Mode';
+            el.className = enabled ? 'status-text on' : 'status-text off';
+        }
+        
+        function toggleLight() {
+            var enabled = document.getElementById('lightEnabled').checked ? 1 : 0;
+            #["Esp32s3"].writeShadow("lightEnabled", enabled);
+            updateStatusText(enabled == 1);
+        }
+        
+        function saveSchedule() {
+            var btn = document.getElementById('btnSave');
+            btn.textContent = '⏳ Saving...';
+            
+            #["Esp32s3"].writeShadow("lightOnDay", parseInt(document.getElementById('onDay').value));
+            #["Esp32s3"].writeShadow("lightOnTime", document.getElementById('onTime').value);
+            #["Esp32s3"].writeShadow("lightOffDay", parseInt(document.getElementById('offDay').value));
+            #["Esp32s3"].writeShadow("lightOffTime", document.getElementById('offTime').value);
+            
+            setTimeout(function() {
+                btn.textContent = '✅ Saved!';
+                setTimeout(function() { btn.textContent = '💾 Save Schedule'; }, 2000);
+            }, 300);
+        }
+        
+        initFromShadow();
+    </script>
+</body>
+</html>
+</file>
+
+<file path="widget_medicine_dispenser_backup.html">
+<!DOCTYPE html>
+<html lang="th">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, sans-serif;
+            padding: 12px;
+            background: linear-gradient(135deg, #f0f7f4 0%, #e8f5f0 100%);
+            min-height: 100vh;
+            /* Allow scrolling if content is too tall */
+            overflow-y: auto;
+            padding-bottom: 100px;
+            /* Extra space for fixed button */
+        }
+
+        /* Scrollbar Styling */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #f1f1f1;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #ccc;
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #bbb;
+        }
+
+        /* --- CARD STYLE --- */
+        .card {
+            background: #ffffff;
+            border-radius: 18px;
+            padding: 0;
+            max-width: 600px;
+            margin: 0 auto 20px auto;
+            box-shadow: 0 10px 30px rgba(34, 139, 34, 0.12);
+            border: 1px solid rgba(46, 213, 115, 0.15);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #2ed573 0%, #26de81 100%);
+            padding: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            box-shadow: 0 2px 8px rgba(46, 213, 115, 0.2);
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex: 1;
+        }
+
+        .header-icon {
+            font-size: 28px;
+            filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.1));
+        }
+
+        .header-title {
+            color: #fff;
+            font-size: 18px;
+            font-weight: 700;
+        }
+
+        /* --- TOGGLE --- */
+        .toggle {
+            position: relative;
+            width: 50px;
+            height: 26px;
+            flex-shrink: 0;
+        }
+
+        .toggle input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            inset: 0;
+            background: rgba(255, 255, 255, 0.3);
+            border-radius: 26px;
+            transition: 0.3s;
+            border: 2px solid rgba(255, 255, 255, 0.5);
+        }
+
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 18px;
+            width: 18px;
+            left: 2px;
+            bottom: 2px;
+            background: #fff;
+            border-radius: 50%;
+            transition: 0.3s;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+        }
+
+        input:checked+.slider {
+            background: rgba(255, 255, 255, 0.95);
+            border-color: #fff;
+        }
+
+        input:checked+.slider:before {
+            transform: translateX(24px);
+            background: #2ed573;
+        }
+
+        .content {
+            padding: 18px;
+        }
+
+        /* --- DOSE GRID --- */
+        .section-title {
+            color: #1b5e20;
+            font-size: 14px;
+            font-weight: 700;
+            margin: 20px 0 12px 0;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .dose-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 12px;
+        }
+
+        .dose-card {
+            background: #fff;
+            border-radius: 12px;
+            padding: 15px;
+            border: 2px solid rgba(46, 213, 115, 0.15);
+            transition: all 0.3s;
+        }
+
+        .dose-card:hover {
+            border-color: rgba(46, 213, 115, 0.3);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+        }
+
+        .dose-header {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: 10px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid rgba(46, 213, 115, 0.1);
+        }
+
+        .dose-icon {
+            font-size: 18px;
+        }
+
+        .dose-label {
+            font-size: 14px;
+            font-weight: 700;
+            color: #333;
+        }
+
+        .dose-label.morning {
+            color: #ff9800;
+        }
+
+        .dose-label.noon {
+            color: #f44336;
+        }
+
+        .dose-label.evening {
+            color: #9c27b0;
+        }
+
+        .dose-label.bedtime {
+            color: #2196f3;
+        }
+
+        .dose-field {
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .field-label {
+            color: #666;
+            font-size: 12px;
+            font-weight: 600;
+            min-width: 60px;
+        }
+
+        /* Time Input Styled */
+        input[type="time"] {
+            width: 120px;
+            height: 38px;
+            padding: 0 10px;
+            border-radius: 8px;
+            border: 1.5px solid rgba(46, 213, 115, 0.2);
+            background: #f8fffe;
+            color: #333;
+            font-size: 14px;
+            font-weight: 600;
+            text-align: center;
+        }
+
+        input[type="time"]:focus {
+            outline: none;
+            border-color: #2ed573;
+            background: #fff;
+        }
+
+        /* --- MODULES (New!) --- */
+        .mod-item {
+            background: linear-gradient(135deg, rgba(46, 213, 115, 0.05), rgba(46, 213, 115, 0.02));
+            border-radius: 12px;
+            padding: 15px;
+            margin-bottom: 15px;
+            border: 1px solid rgba(46, 213, 115, 0.2);
+        }
+
+        .mod-header-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .mod-title {
+            font-weight: 700;
+            color: #1b5e20;
+            font-size: 14px;
+        }
+
+        .mod-name-input {
+            width: 100%;
+            height: 38px;
+            padding: 0 12px;
+            border-radius: 8px;
+            border: 1.5px solid rgba(46, 213, 115, 0.2);
+            margin-bottom: 10px;
+            font-size: 14px;
+            font-family: inherit;
+        }
+
+        .qty-control {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            background: #fff;
+            padding: 5px;
+            border-radius: 8px;
+            border: 1px solid rgba(46, 213, 115, 0.15);
+        }
+
+        .qty-btn {
+            width: 30px;
+            height: 30px;
+            border: none;
+            background: #f0f7f4;
+            border-radius: 6px;
+            color: #2ed573;
+            font-weight: bold;
+            font-size: 18px;
+            cursor: pointer;
+        }
+
+        .qty-val {
+            font-weight: 700;
+            color: #333;
+            min-width: 25px;
+            text-align: center;
+        }
+
+        .slots-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-top: 10px;
+        }
+
+        .slot-pill {
+            padding: 4px 10px;
+            border-radius: 15px;
+            border: 1px solid #ddd;
+            font-size: 11px;
+            color: #777;
+            background: #fff;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+
+        .slot-pill.active {
+            background: #2ed573;
+            color: #fff;
+            border-color: #2ed573;
+            box-shadow: 0 2px 6px rgba(46, 213, 115, 0.3);
+        }
+
+        /* --- SAVE BUTTON --- */
+        .btn-save {
+            width: 100%;
+            padding: 15px;
+            border-radius: 12px;
+            border: none;
+            background: linear-gradient(135deg, #2ed573, #26de81);
+            color: #fff;
+            font-size: 16px;
+            font-weight: 700;
+            cursor: pointer;
+            box-shadow: 0 4px 12px rgba(46, 213, 115, 0.3);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            max-width: 360px;
+            z-index: 100;
+        }
+
+        .btn-save:active {
+            transform: translateX(-50%) scale(0.98);
+        }
+    </style>
+</head>
+
+<body>
+
+    <!-- CARD 1: SCHEDULE -->
+    <div class="card">
+        <div class="header">
+            <div class="header-left">
+                <span class="header-icon">⏰</span>
+                <span class="header-title">ตารางเวลาจ่ายยา</span>
+            </div>
+            <label class="toggle">
+                <input type="checkbox" id="master">
+                <span class="slider"></span>
+            </label>
+        </div>
+
+        <div class="content">
+            <div class="dose-grid">
+                <!-- Morning -->
+                <div class="dose-card">
+                    <div class="dose-header">
+                        <span class="dose-icon">🌅</span>
+                        <span class="dose-label morning">เช้า (Morning)</span>
+                    </div>
+                    <div class="dose-field">
+                        <span class="field-label">ก่อนอาหาร</span>
+                        <input type="time" id="t_morn_pre" value="08:00">
+                    </div>
+                    <div class="dose-field">
+                        <span class="field-label">หลังอาหาร</span>
+                        <input type="time" id="t_morn_post" value="08:30">
+                    </div>
+                </div>
+
+                <!-- Noon -->
+                <div class="dose-card">
+                    <div class="dose-header">
+                        <span class="dose-icon">☀️</span>
+                        <span class="dose-label noon">กลางวัน (Noon)</span>
+                    </div>
+                    <div class="dose-field">
+                        <span class="field-label">ก่อนอาหาร</span>
+                        <input type="time" id="t_noon_pre" value="12:00">
+                    </div>
+                    <div class="dose-field">
+                        <span class="field-label">หลังอาหาร</span>
+                        <input type="time" id="t_noon_post" value="12:30">
+                    </div>
+                </div>
+
+                <!-- Evening -->
+                <div class="dose-card">
+                    <div class="dose-header">
+                        <span class="dose-icon">🌆</span>
+                        <span class="dose-label evening">เย็น (Evening)</span>
+                    </div>
+                    <div class="dose-field">
+                        <span class="field-label">ก่อนอาหาร</span>
+                        <input type="time" id="t_eve_pre" value="17:00">
+                    </div>
+                    <div class="dose-field">
+                        <span class="field-label">หลังอาหาร</span>
+                        <input type="time" id="t_eve_post" value="17:30">
+                    </div>
+                </div>
+
+                <!-- Bed -->
+                <div class="dose-card">
+                    <div class="dose-header">
+                        <span class="dose-icon">🌙</span>
+                        <span class="dose-label bedtime">ก่อนนอน (Bed)</span>
+                    </div>
+                    <div class="dose-field">
+                        <span class="field-label">เวลานอน</span>
+                        <input type="time" id="t_bed" value="21:00">
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- CARD 2: MODULES -->
+    <div class="card" style="margin-bottom: 80px;">
+        <div class="header">
+            <div class="header-left">
+                <span class="header-icon">💊</span>
+                <span class="header-title">ตลับยา (Cartridges)</span>
+            </div>
+        </div>
+        <div class="content" id="module-container">
+            <!-- JS Generated -->
+        </div>
+    </div>
+
+    <!-- SAVE BUTTON -->
+    <button class="btn-save" onclick="saveData()">
+        <span>💾</span> <span id="save-txt">บันทึกข้อมูล</span>
+    </button>
+
+    <script>
+        // --- DATA ---
+        const TIME_KEYS = ["t_morn_pre", "t_morn_post", "t_noon_pre", "t_noon_post", "t_eve_pre", "t_eve_post", "t_bed"];
+        const SLOT_LABELS = ["เช้า-ก่อน", "เช้า-หลัง", "เที่ยง-ก่อน", "เที่ยง-หลัง", "เย็น-ก่อน", "เย็น-หลัง", "นอน"];
+        var modules = Array.from({ length: 6 }, (_, i) => ({ id: i + 1, name: "", count: 0, slots: 0 }));
+
+        function init() {
+            // Safety Check: Check if context is available
+            if (typeof microgear === 'undefined' && typeof datasources === 'undefined') {
+                console.warn("⚠️ Running outside NETPIE environment or loading...");
+            }
+            // Render Modules
+            let html = "";
+            modules.forEach(m => {
+                html += `
+            <div class="mod-item">
+                <div class="mod-header-row">
+                    <span class="mod-title">ตลับที่ ${m.id}</span>
+                    <div class="qty-control">
+                        <button class="qty-btn" onclick="step(${m.id},-1)">-</button>
+                        <div id="c-${m.id}" class="qty-val">0</div>
+                        <button class="qty-btn" onclick="step(${m.id},1)">+</button>
+                    </div>
+                </div>
+                <input type="text" id="n-${m.id}" class="mod-name-input" placeholder="ระบุชื่อยา..." onchange="upd(${m.id})">
+                <div class="slots-row">${renderSlots(m.id)}</div>
+            </div>`;
+            });
+            document.getElementById('module-container').innerHTML = html;
+
+            // Loop
+            setInterval(syncLoop, 1000);
+        }
+
+        function renderSlots(id) {
+            return SLOT_LABELS.map((s, i) =>
+                `<div id="s-${id}-${i}" class="slot-pill" onclick="tog(${id},${i})">${s}</div>`
+            ).join('');
+        }
+
+        // --- LOGIC ---
+        function step(id, d) {
+            let m = modules[id - 1];
+            m.count = Math.max(0, (m.count || 0) + d);
+            refresh(id);
+        }
+        function tog(id, b) {
+            modules[id - 1].slots ^= (1 << b);
+            refresh(id);
+        }
+        function upd(id) {
+            modules[id - 1].name = document.getElementById('n-' + id).value;
+        }
+        function refresh(id) {
+            let m = modules[id - 1];
+            document.getElementById('c-' + id).innerText = m.count;
+            for (let j = 0; j < 7; j++) {
+                let el = document.getElementById(`s-${id}-${j}`);
+                if (m.slots & (1 << j)) el.classList.add('active'); else el.classList.remove('active');
+            }
+        }
+
+        // --- NETPIE ---
+        function saveData() {
+            const btn = document.getElementById('save-txt');
+            const orig = btn.innerText;
+
+            // Validation
+            if (typeof microgear === 'undefined' || !microgear["esp32cam_dispenser"]) {
+                alert("⚠️ Offline: Cannot connect to NETPIE");
+                return;
+            }
+
+            btn.innerText = "กำลังส่ง...";
+            try {
+                let p = {};
+                p.scheduleEnabled = document.getElementById('master').checked ? 1 : 0;
+
+                // Times
+                TIME_KEYS.forEach(k => {
+                    let el = document.getElementById(k);
+                    if (el) p[k] = el.value;
+                });
+
+                // Modules
+                modules.forEach(m => {
+                    upd(m.id);
+                    p[`med${m.id}_name`] = m.name;
+                    p[`med${m.id}_count`] = m.count;
+                    p[`med${m.id}_slots`] = m.slots;
+                });
+
+                // Send
+                const target = microgear["esp32cam_dispenser"];
+                for (let k in p) target.writeShadow(k, p[k]);
+
+                btn.innerText = "✅ เรียบร้อย";
+                setTimeout(() => btn.innerText = orig, 2000);
+
+            } catch (e) {
+                btn.innerText = "❌ ผิดพลาด";
+                alert("Error: " + e.message);
+            }
+        }
+
+        function syncLoop() {
+            if (typeof datasources === 'undefined' || !datasources["esp32cam_dispenser"]) return;
+            let s = datasources["esp32cam_dispenser"]["shadow"];
+            if (!s) return;
+
+            if (s.scheduleEnabled != null) document.getElementById('master').checked = (s.scheduleEnabled == 1);
+
+            TIME_KEYS.forEach(k => {
+                let el = document.getElementById(k);
+                if (el && document.activeElement !== el && s[k]) el.value = s[k];
+            });
+
+            modules.forEach(m => {
+                if (s[`med${m.id}_name`] !== undefined) {
+                    m.name = s[`med${m.id}_name`];
+                    let el = document.getElementById(`n-${m.id}`);
+                    if (el && document.activeElement !== el) el.value = m.name;
+                }
+                if (s[`med${m.id}_count`] != null) m.count = parseInt(s[`med${m.id}_count`]);
+                if (s[`med${m.id}_slots`] != null) m.slots = parseInt(s[`med${m.id}_slots`]);
+                refresh(m.id);
+            });
+        }
+
+        init();
+    </script>
+</body>
+
+</html>
+</file>
+
+<file path="widget_medicine_dispenser_legacy.html">
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, sans-serif;
+            padding: 12px;
+            background: linear-gradient(135deg, #f0f7f4 0%, #e8f5f0 100%);
+        }
+
+        .card {
+            background: #ffffff;
+            border-radius: 18px;
+            padding: 0;
+            max-width: 380px;
+            margin: 0 auto;
+            box-shadow: 0 10px 30px rgba(34, 139, 34, 0.12);
+            border: 1px solid rgba(46, 213, 115, 0.15);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #2ed573 0%, #26de81 100%);
+            padding: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            box-shadow: 0 2px 8px rgba(46, 213, 115, 0.2);
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex: 1;
+        }
+
+        .header-icon {
+            font-size: 28px;
+            filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.1));
+        }
+
+        .header-title {
+            color: #fff;
+            font-size: 16px;
+            font-weight: 700;
+        }
+
+        .toggle {
+            position: relative;
+            width: 50px;
+            height: 26px;
+            flex-shrink: 0;
+        }
+
+        .toggle input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            inset: 0;
+            background: rgba(255, 255, 255, 0.3);
+            border-radius: 26px;
+            transition: 0.3s;
+            border: 2px solid rgba(255, 255, 255, 0.5);
+        }
+
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 18px;
+            width: 18px;
+            left: 2px;
+            bottom: 2px;
+            background: #fff;
+            border-radius: 50%;
+            transition: 0.3s;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+        }
+
+        input:checked+.slider {
+            background: rgba(255, 255, 255, 0.95);
+            border-color: #fff;
+        }
+
+        input:checked+.slider:before {
+            transform: translateX(24px);
+            background: #2ed573;
+        }
+
+        .content {
+            padding: 18px;
+        }
+
+        .medicine-section {
+            background: linear-gradient(135deg, rgba(46, 213, 115, 0.08), rgba(46, 213, 115, 0.04));
+            border-radius: 12px;
+            padding: 14px;
+            margin-bottom: 14px;
+            border: 1px solid rgba(46, 213, 115, 0.2);
+        }
+
+        .medicine-label {
+            color: #1b5e20;
+            font-size: 11px;
+            font-weight: 600;
+            margin-bottom: 6px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .medicine-input {
+            width: 100%;
+            background: #fff;
+            border: 2px solid rgba(46, 213, 115, 0.3);
+            border-radius: 10px;
+            padding: 10px 12px;
+            color: #1b5e20;
+            font-size: 15px;
+            font-weight: 600;
+            transition: all 0.3s;
+        }
+
+        .medicine-input:focus {
+            outline: none;
+            border-color: #2ed573;
+            box-shadow: 0 0 0 3px rgba(46, 213, 115, 0.1);
+        }
+
+        .btn-dispense {
+            width: 100%;
+            padding: 14px;
+            border-radius: 12px;
+            border: none;
+            background: linear-gradient(135deg, #2ed573, #26de81);
+            color: #fff;
+            font-size: 15px;
+            font-weight: 700;
+            cursor: pointer;
+            margin-bottom: 16px;
+            box-shadow: 0 4px 12px rgba(46, 213, 115, 0.3);
+            transition: all 0.3s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+
+        .btn-dispense:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 18px rgba(46, 213, 115, 0.4);
+        }
+
+        .btn-dispense:active {
+            transform: translateY(0);
+        }
+
+        .section-title {
+            color: #1b5e20;
+            font-size: 13px;
+            font-weight: 700;
+            margin-bottom: 12px;
+            padding-left: 4px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .dose-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-bottom: 16px;
+        }
+
+        .dose-card {
+            background: #fff;
+            border-radius: 12px;
+            padding: 12px;
+            border: 2px solid rgba(46, 213, 115, 0.15);
+            transition: all 0.3s;
+        }
+
+        .dose-card:hover {
+            border-color: rgba(46, 213, 115, 0.3);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+        }
+
+        .dose-header {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: 10px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid rgba(46, 213, 115, 0.1);
+        }
+
+        .dose-icon {
+            font-size: 16px;
+        }
+
+        .dose-label {
+            font-size: 12px;
+            font-weight: 700;
+            color: #333;
+        }
+
+        .dose-label.morning {
+            color: #ff9800;
+        }
+
+        .dose-label.noon {
+            color: #f44336;
+        }
+
+        .dose-label.evening {
+            color: #9c27b0;
+        }
+
+        .dose-label.bedtime {
+            color: #2196f3;
+        }
+
+        .dose-field {
+            margin-bottom: 8px;
+        }
+
+        .dose-field:last-child {
+            margin-bottom: 0;
+        }
+
+        .field-label {
+            color: #666;
+            font-size: 9px;
+            margin-bottom: 4px;
+            display: block;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+        }
+
+        input[type="time"],
+        select {
+            width: 100%;
+            height: 38px;
+            padding: 0 10px;
+            border-radius: 8px;
+            border: 1.5px solid rgba(46, 213, 115, 0.2);
+            background: #f8fffe;
+            color: #333;
+            font-size: 13px;
+            font-weight: 600;
+            transition: all 0.3s;
+        }
+
+        select {
+            -webkit-appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 12 12'%3E%3Cpath fill='%232ed573' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 8px center;
+            padding-right: 28px;
+        }
+
+        input[type="time"]:focus,
+        select:focus {
+            outline: none;
+            border-color: #2ed573;
+            background: #fff;
+            box-shadow: 0 0 0 3px rgba(46, 213, 115, 0.1);
+        }
+
+        .btn-save {
+            width: 100%;
+            padding: 14px;
+            border-radius: 12px;
+            border: none;
+            background: linear-gradient(135deg, #2ed573, #26de81);
+            color: #fff;
+            font-size: 15px;
+            font-weight: 700;
+            cursor: pointer;
+            box-shadow: 0 4px 12px rgba(46, 213, 115, 0.3);
+            transition: all 0.3s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+
+        .btn-save:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 18px rgba(46, 213, 115, 0.4);
+        }
+
+        .btn-save:active {
+            transform: translateY(0);
+        }
+    </style>
+</head>
+
+<body>
+    <div class="card">
+        <div class="header">
+            <div class="header-left">
+                <span class="header-icon">💊</span>
+                <span class="header-title">ตั้งเวลาจ่ายยา</span>
+            </div>
+            <label class="toggle">
+                <input type="checkbox" id="scheduleEnabled" onchange="toggleSchedule()">
+                <span class="slider"></span>
+            </label>
+        </div>
+
+        <div class="content">
+            <div class="medicine-section">
+                <div class="medicine-label">ชื่อยา</div>
+                <input type="text" class="medicine-input" id="medicineNameInput" placeholder="กรอกชื่อยา..."
+                    value="Paracetamol" onchange="updateMedicineName()">
+            </div>
+            <button class="btn-dispense" onclick="dispenseNow()">
+                <span>🏥</span><span>จ่ายยาทันที</span>
+            </button>
+            <div class="section-title"><span>⏰</span><span>ตารางเวลา</span></div>
+            <div class="dose-grid">
+                <!-- Morning -->
+                <div class="dose-card">
+                    <div class="dose-header"><span class="dose-icon">🌅</span><span
+                            class="dose-label morning">เช้า</span></div>
+                    <div class="dose-field"><label class="field-label">เวลา</label><input type="time" id="dose1_time"
+                            value="08:00"></div>
+                    <div class="dose-field"><label class="field-label">ช่วงเวลา</label><select id="dose1_timing">
+                            <option value="before">ก่อนอาหาร</option>
+                            <option value="after" selected>หลังอาหาร</option>
+                        </select></div>
+                </div>
+                <!-- Noon -->
+                <div class="dose-card">
+                    <div class="dose-header"><span class="dose-icon">☀️</span><span
+                            class="dose-label noon">กลางวัน</span></div>
+                    <div class="dose-field"><label class="field-label">เวลา</label><input type="time" id="dose2_time"
+                            value="12:00"></div>
+                    <div class="dose-field"><label class="field-label">ช่วงเวลา</label><select id="dose2_timing">
+                            <option value="before" selected>ก่อนอาหาร</option>
+                            <option value="after">หลังอาหาร</option>
+                        </select></div>
+                </div>
+                <!-- Evening -->
+                <div class="dose-card">
+                    <div class="dose-header"><span class="dose-icon">🌆</span><span
+                            class="dose-label evening">เย็น</span></div>
+                    <div class="dose-field"><label class="field-label">เวลา</label><input type="time" id="dose3_time"
+                            value="19:00"></div>
+                    <div class="dose-field"><label class="field-label">ช่วงเวลา</label><select id="dose3_timing">
+                            <option value="before">ก่อนอาหาร</option>
+                            <option value="after" selected>หลังอาหาร</option>
+                        </select></div>
+                </div>
+                <!-- Bedtime -->
+                <div class="dose-card">
+                    <div class="dose-header"><span class="dose-icon">🌙</span><span
+                            class="dose-label bedtime">ก่อนนอน</span></div>
+                    <div class="dose-field"><label class="field-label">เวลา</label><input type="time" id="dose4_time"
+                            value="22:00"></div>
+                    <div class="dose-field"><label class="field-label">ช่วงเวลา</label><select id="dose4_timing"
+                            disabled>
+                            <option value="none">-</option>
+                        </select></div>
+                </div>
+            </div>
+            <button class="btn-save" id="btnSave" onclick="saveSchedule()">
+                <span>💾</span><span>บันทึกตารางเวลา</span>
+            </button>
+        </div>
+    </div>
+
+    <script>
+        var medicineName = "${#["esp32cam_dispenser"]["shadow"]["medicineName"]}";
+        var scheduleEnabled = ${#["esp32cam_dispenser"]["shadow"]["scheduleEnabled"] };
+
+        var dose1_time = "${#["esp32cam_dispenser"]["shadow"]["dose1_time"]}";
+        var dose1_timing = "${#["esp32cam_dispenser"]["shadow"]["dose1_timing"]}";
+
+        var dose2_time = "${#["esp32cam_dispenser"]["shadow"]["dose2_time"]}";
+        var dose2_timing = "${#["esp32cam_dispenser"]["shadow"]["dose2_timing"]}";
+
+        var dose3_time = "${#["esp32cam_dispenser"]["shadow"]["dose3_time"]}";
+        var dose3_timing = "${#["esp32cam_dispenser"]["shadow"]["dose3_timing"]}";
+
+        var dose4_time = "${#["esp32cam_dispenser"]["shadow"]["dose4_time"]}";
+
+        function initFromShadow() {
+            if (medicineName && medicineName !== "undefined" && medicineName !== "ยา") {
+                document.getElementById('medicineNameInput').value = medicineName;
+            }
+            document.getElementById('scheduleEnabled').checked = (scheduleEnabled == 1);
+            if (dose1_time && dose1_time !== "undefined") document.getElementById('dose1_time').value = dose1_time;
+            if (dose1_timing && dose1_timing !== "undefined") document.getElementById('dose1_timing').value = dose1_timing;
+            if (dose2_time && dose2_time !== "undefined") document.getElementById('dose2_time').value = dose2_time;
+            if (dose2_timing && dose2_timing !== "undefined") document.getElementById('dose2_timing').value = dose2_timing;
+            if (dose3_time && dose3_time !== "undefined") document.getElementById('dose3_time').value = dose3_time;
+            if (dose3_timing && dose3_timing !== "undefined") document.getElementById('dose3_timing').value = dose3_timing;
+            if (dose4_time && dose4_time !== "undefined") document.getElementById('dose4_time').value = dose4_time;
+        }
+
+        var updateTimer = null;
+        function updateMedicineName() {
+            var name = document.getElementById('medicineNameInput').value;
+            if (name && name.trim() !== "") {
+                clearTimeout(updateTimer);
+                updateTimer = setTimeout(function () {
+                    #["esp32cam_dispenser"].writeShadow("medicineName", name);
+                }, 500);
+            }
+        }
+
+        function toggleSchedule() {
+            var enabled = document.getElementById('scheduleEnabled').checked ? 1 : 0;
+            #["esp32cam_dispenser"].writeShadow("scheduleEnabled", enabled);
+        }
+
+        function dispenseNow() {
+            #["esp32cam_dispenser"].writeShadow("dispenseNow", 1);
+            setTimeout(function () {
+                #["esp32cam_dispenser"].writeShadow("dispenseNow", 0);
+            }, 500);
+        }
+
+        function saveSchedule() {
+            var btn = document.getElementById('btnSave');
+            var originalHTML = btn.innerHTML;
+            btn.innerHTML = '<span>⏳</span><span>กำลังบันทึก...</span>';
+            var shadowData = {
+                medicineName: document.getElementById('medicineNameInput').value,
+                dose1_time: document.getElementById('dose1_time').value,
+                dose1_timing: document.getElementById('dose1_timing').value,
+                dose2_time: document.getElementById('dose2_time').value,
+                dose2_timing: document.getElementById('dose2_timing').value,
+                dose3_time: document.getElementById('dose3_time').value,
+                dose3_timing: document.getElementById('dose3_timing').value,
+                dose4_time: document.getElementById('dose4_time').value
+            };
+            #["esp32cam_dispenser"].writeShadow(shadowData);
+            setTimeout(function () {
+                btn.innerHTML = '<span>✅</span><span>บันทึกเรียบร้อย!</span>';
+                setTimeout(function () {
+                    btn.innerHTML = originalHTML;
+                }, 2000);
+            }, 300);
+        }
+        initFromShadow();
+    </script>
+</body>
+
+</html>
+</file>
+
+<file path="widget_medicine_dispenser.html">
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, sans-serif;
+            padding: 12px;
+            background: linear-gradient(135deg, #f0f7f4 0%, #e8f5f0 100%);
+        }
+
+        .card {
+            background: #ffffff;
+            border-radius: 18px;
+            padding: 0;
+            max-width: 380px;
+            margin: 0 auto;
+            box-shadow: 0 10px 30px rgba(34, 139, 34, 0.12);
+            border: 1px solid rgba(46, 213, 115, 0.15);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #2ed573 0%, #26de81 100%);
+            padding: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            box-shadow: 0 2px 8px rgba(46, 213, 115, 0.2);
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex: 1;
+        }
+
+        .header-icon {
+            font-size: 28px;
+            filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.1));
+        }
+
+        .header-title {
+            color: #fff;
+            font-size: 16px;
+            font-weight: 700;
+        }
+
+        .toggle {
+            position: relative;
+            width: 50px;
+            height: 26px;
+            flex-shrink: 0;
+        }
+
+        .toggle input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            inset: 0;
+            background: rgba(255, 255, 255, 0.3);
+            border-radius: 26px;
+            transition: 0.3s;
+            border: 2px solid rgba(255, 255, 255, 0.5);
+        }
+
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 18px;
+            width: 18px;
+            left: 2px;
+            bottom: 2px;
+            background: #fff;
+            border-radius: 50%;
+            transition: 0.3s;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+        }
+
+        input:checked+.slider {
+            background: rgba(255, 255, 255, 0.95);
+            border-color: #fff;
+        }
+
+        input:checked+.slider:before {
+            transform: translateX(24px);
+            background: #2ed573;
+        }
+
+        .content {
+            padding: 18px;
+        }
+
+        .medicine-section {
+            background: linear-gradient(135deg, rgba(46, 213, 115, 0.08), rgba(46, 213, 115, 0.04));
+            border-radius: 12px;
+            padding: 14px;
+            margin-bottom: 14px;
+            border: 1px solid rgba(46, 213, 115, 0.2);
+        }
+
+        .medicine-label {
+            color: #1b5e20;
+            font-size: 11px;
+            font-weight: 600;
+            margin-bottom: 6px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .medicine-input {
+            width: 100%;
+            background: #fff;
+            border: 2px solid rgba(46, 213, 115, 0.3);
+            border-radius: 10px;
+            padding: 10px 12px;
+            color: #1b5e20;
+            font-size: 15px;
+            font-weight: 600;
+            transition: all 0.3s;
+        }
+
+        .medicine-input:focus {
+            outline: none;
+            border-color: #2ed573;
+            box-shadow: 0 0 0 3px rgba(46, 213, 115, 0.1);
+        }
+
+        .btn-dispense {
+            width: 100%;
+            padding: 14px;
+            border-radius: 12px;
+            border: none;
+            background: linear-gradient(135deg, #2ed573, #26de81);
+            color: #fff;
+            font-size: 15px;
+            font-weight: 700;
+            cursor: pointer;
+            margin-bottom: 16px;
+            box-shadow: 0 4px 12px rgba(46, 213, 115, 0.3);
+            transition: all 0.3s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+
+        .btn-dispense:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 18px rgba(46, 213, 115, 0.4);
+        }
+
+        .btn-dispense:active {
+            transform: translateY(0);
+        }
+
+        .section-title {
+            color: #1b5e20;
+            font-size: 13px;
+            font-weight: 700;
+            margin-bottom: 12px;
+            padding-left: 4px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .dose-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-bottom: 16px;
+        }
+
+        .dose-card {
+            background: #fff;
+            border-radius: 12px;
+            padding: 12px;
+            border: 2px solid rgba(46, 213, 115, 0.15);
+            transition: all 0.3s;
+        }
+
+        .dose-card:hover {
+            border-color: rgba(46, 213, 115, 0.3);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+        }
+
+        .dose-header {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: 10px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid rgba(46, 213, 115, 0.1);
+        }
+
+        .dose-icon {
+            font-size: 16px;
+        }
+
+        .dose-label {
+            font-size: 12px;
+            font-weight: 700;
+            color: #333;
+        }
+
+        .dose-label.morning {
+            color: #ff9800;
+        }
+
+        .dose-label.noon {
+            color: #f44336;
+        }
+
+        .dose-label.evening {
+            color: #9c27b0;
+        }
+
+        .dose-label.bedtime {
+            color: #2196f3;
+        }
+
+        .dose-field {
+            margin-bottom: 8px;
+        }
+
+        .dose-field:last-child {
+            margin-bottom: 0;
+        }
+
+        .field-label {
+            color: #666;
+            font-size: 9px;
+            margin-bottom: 4px;
+            display: block;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+        }
+
+        input[type="time"],
+        select {
+            width: 100%;
+            height: 38px;
+            padding: 0 10px;
+            border-radius: 8px;
+            border: 1.5px solid rgba(46, 213, 115, 0.2);
+            background: #f8fffe;
+            color: #333;
+            font-size: 13px;
+            font-weight: 600;
+            transition: all 0.3s;
+        }
+
+        select {
+            -webkit-appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 12 12'%3E%3Cpath fill='%232ed573' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 8px center;
+            padding-right: 28px;
+        }
+
+        input[type="time"]:focus,
+        select:focus {
+            outline: none;
+            border-color: #2ed573;
+            background: #fff;
+            box-shadow: 0 0 0 3px rgba(46, 213, 115, 0.1);
+        }
+
+        .btn-save {
+            width: 100%;
+            padding: 14px;
+            border-radius: 12px;
+            border: none;
+            background: linear-gradient(135deg, #2ed573, #26de81);
+            color: #fff;
+            font-size: 15px;
+            font-weight: 700;
+            cursor: pointer;
+            box-shadow: 0 4px 12px rgba(46, 213, 115, 0.3);
+            transition: all 0.3s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+
+        .btn-save:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 18px rgba(46, 213, 115, 0.4);
+        }
+
+        .btn-save:active {
+            transform: translateY(0);
+        }
+    </style>
+</head>
+
+<body>
+    <div class="card">
+        <div class="header">
+            <div class="header-left">
+                <span class="header-icon">💊</span>
+                <span class="header-title">ตั้งเวลาจ่ายยา (ตลับ 1)</span>
+            </div>
+            <label class="toggle">
+                <input type="checkbox" id="scheduleEnabled" onchange="toggleSchedule()">
+                <span class="slider"></span>
+            </label>
+        </div>
+
+        <div class="content">
+            <div class="medicine-section">
+                <div class="medicine-label">ชื่อยา (ตลับ 1)</div>
+                <input type="text" class="medicine-input" id="medicineNameInput" placeholder="กรอกชื่อยา..."
+                    value="Paracetamol" onchange="updateMedicineName()">
+            </div>
+
+            <button class="btn-dispense" onclick="dispenseNow()">
+                <span>🏥</span>
+                <span>จ่ายยาทันที (ตลับ 1)</span>
+            </button>
+
+            <div class="section-title">
+                <span>⏰</span>
+                <span>ตารางเวลา</span>
+            </div>
+
+            <div class="dose-grid">
+                <!-- Morning -->
+                <div class="dose-card">
+                    <div class="dose-header">
+                        <span class="dose-icon">🌅</span>
+                        <span class="dose-label morning">เช้า</span>
+                    </div>
+                    <div class="dose-field">
+                        <label class="field-label">เวลา</label>
+                        <input type="time" id="dose1_time" value="08:00">
+                    </div>
+                    <div class="dose-field">
+                        <label class="field-label">ช่วงเวลา</label>
+                        <select id="dose1_timing">
+                            <option value="before">ก่อนอาหาร</option>
+                            <option value="after" selected>หลังอาหาร</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Noon -->
+                <div class="dose-card">
+                    <div class="dose-header">
+                        <span class="dose-icon">☀️</span>
+                        <span class="dose-label noon">กลางวัน</span>
+                    </div>
+                    <div class="dose-field">
+                        <label class="field-label">เวลา</label>
+                        <input type="time" id="dose2_time" value="12:00">
+                    </div>
+                    <div class="dose-field">
+                        <label class="field-label">ช่วงเวลา</label>
+                        <select id="dose2_timing">
+                            <option value="before" selected>ก่อนอาหาร</option>
+                            <option value="after">หลังอาหาร</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Evening -->
+                <div class="dose-card">
+                    <div class="dose-header">
+                        <span class="dose-icon">🌆</span>
+                        <span class="dose-label evening">เย็น</span>
+                    </div>
+                    <div class="dose-field">
+                        <label class="field-label">เวลา</label>
+                        <input type="time" id="dose3_time" value="19:00">
+                    </div>
+                    <div class="dose-field">
+                        <label class="field-label">ช่วงเวลา</label>
+                        <select id="dose3_timing">
+                            <option value="before">ก่อนอาหาร</option>
+                            <option value="after" selected>หลังอาหาร</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Bedtime -->
+                <div class="dose-card">
+                    <div class="dose-header">
+                        <span class="dose-icon">🌙</span>
+                        <span class="dose-label bedtime">ก่อนนอน</span>
+                    </div>
+                    <div class="dose-field">
+                        <label class="field-label">เวลา</label>
+                        <input type="time" id="dose4_time" value="22:00">
+                    </div>
+                    <div class="dose-field">
+                        <label class="field-label">ช่วงเวลา</label>
+                        <select id="dose4_timing" disabled>
+                            <option value="none">-</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <button class="btn-save" id="btnSave" onclick="saveSchedule()">
+                <span>💾</span>
+                <span>บันทึกตารางเวลา</span>
+            </button>
+        </div>
+    </div>
+
+    <script>
+        // อ่านค่าจาก Shadow - Map 6-Module Firmware Keys
+        var med1_name = "${#["esp32cam_dispenser"]["shadow"]["med1_name"]}";
+        var scheduleEnabled = ${#["esp32cam_dispenser"]["shadow"]["scheduleEnabled"] };
+        var med1_slots = ${#["esp32cam_dispenser"]["shadow"]["med1_slots"] };
+
+        // Note: Global Times (t_morn_pre etc.) are not easily mapped back to this single view
+        // We will stick to write-only mainly for this simplified widget OR rely on user re-entering.
+
+        function initFromShadow() {
+            // ชื่อยา
+            if (med1_name && med1_name !== "undefined" && med1_name !== "ยา") {
+                document.getElementById('medicineNameInput').value = med1_name;
+            }
+
+            // สวิตช์
+            document.getElementById('scheduleEnabled').checked = (scheduleEnabled == 1);
+        }
+
+        // Debounce timer
+        var updateTimer = null;
+
+        function updateMedicineName() {
+            var name = document.getElementById('medicineNameInput').value;
+            if (name && name.trim() !== "") {
+                // Debounce - รอ 500ms ก่อนส่ง
+                clearTimeout(updateTimer);
+                updateTimer = setTimeout(function () {
+                    // Update: med1_name
+                    #["esp32cam_dispenser"].writeShadow("med1_name", name);
+                }, 500);
+            }
+        }
+
+        function toggleSchedule() {
+            var enabled = document.getElementById('scheduleEnabled').checked ? 1 : 0;
+            // ส่งทันที (ไม่ debounce)
+            // Update: scheduleEnabled
+            #["esp32cam_dispenser"].writeShadow("scheduleEnabled", enabled);
+        }
+
+        function dispenseNow() {
+            // Update: dispense_1 (Module 1 Manual Dispense)
+            #["esp32cam_dispenser"].writeShadow("dispense_1", 1);
+            setTimeout(function () {
+                #["esp32cam_dispenser"].writeShadow("dispense_1", 0);
+            }, 500);
+        }
+
+        function saveSchedule() {
+            var btn = document.getElementById('btnSave');
+            var originalHTML = btn.innerHTML;
+            btn.innerHTML = '<span>⏳</span><span>กำลังบันทึก...</span>';
+
+            // 1. Calculate Slots for Module 1
+            var slots = 0;
+            var t1 = document.getElementById('dose1_timing').value;
+            if (t1 === 'before') slots |= (1 << 0);
+            if (t1 === 'after') slots |= (1 << 1);
+
+            var t2 = document.getElementById('dose2_timing').value;
+            if (t2 === 'before') slots |= (1 << 2);
+            if (t2 === 'after') slots |= (1 << 3);
+
+            var t3 = document.getElementById('dose3_timing').value;
+            if (t3 === 'before') slots |= (1 << 4);
+            if (t3 === 'after') slots |= (1 << 5);
+
+            // Bedtime (Assuming always enabled for this card)
+            slots |= (1 << 6);
+
+            // 2. Prepare Data Packet (Using Firmware Keys)
+            var shadowData = {
+                // Module 1 Config
+                med1_name: document.getElementById('medicineNameInput').value,
+                med1_count: 18,
+                med1_slots: slots,
+                scheduleEnabled: document.getElementById('scheduleEnabled').checked ? 1 : 0,
+
+                // Global Times
+                t_bed: document.getElementById('dose4_time').value
+            };
+
+            // 3. Conditional Global Times Map
+            // Map inputs to specific global keys
+            var time1 = document.getElementById('dose1_time').value;
+            if (t1 === 'before') shadowData.t_morn_pre = time1;
+            else shadowData.t_morn_post = time1;
+
+            var time2 = document.getElementById('dose2_time').value;
+            if (t2 === 'before') shadowData.t_noon_pre = time2;
+            else shadowData.t_noon_post = time2;
+
+            var time3 = document.getElementById('dose3_time').value;
+            if (t3 === 'before') shadowData.t_eve_pre = time3;
+            else shadowData.t_eve_post = time3;
+
+            // Debug Payload Check
+            // alert("DEBUG: " + JSON.stringify(shadowData)); // Uncomment to debug
+
+            // 4. Send to NETPIE (Single Object - Trusted method)
+            #["esp32cam_dispenser"].writeShadow(shadowData);
+
+            setTimeout(function () {
+                btn.innerHTML = '<span>✅</span><span>บันทึกตลับ 1 เรียบร้อย!</span>';
+                setTimeout(function () {
+                    btn.innerHTML = originalHTML;
+                }, 2000);
+            }, 500);
+        }
+
+        initFromShadow();
+    </script>
+</body>
+
+</html>
+</file>
+
+<file path="widget_schedule_display.html">
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, sans-serif;
+            padding: 12px;
+            background: linear-gradient(135deg, #f0f7f4 0%, #e8f5f0 100%);
+        }
+
+        .card {
+            background: #ffffff;
+            border-radius: 18px;
+            padding: 0;
+            max-width: 380px;
+            margin: 0 auto;
+            box-shadow: 0 10px 30px rgba(34, 139, 34, 0.12);
+            border: 1px solid rgba(46, 213, 115, 0.15);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #2ed573 0%, #26de81 100%);
+            padding: 16px;
+            text-align: center;
+            box-shadow: 0 2px 8px rgba(46, 213, 115, 0.2);
+        }
+
+        .header h1 {
+            color: #fff;
+            font-size: 16px;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+
+        .content {
+            padding: 18px;
+        }
+
+        .info-section {
+            background: linear-gradient(135deg, rgba(46, 213, 115, 0.08), rgba(46, 213, 115, 0.04));
+            border-radius: 12px;
+            padding: 14px;
+            margin-bottom: 16px;
+            border: 1px solid rgba(46, 213, 115, 0.2);
+        }
+
+        .medicine-name {
+            color: #1b5e20;
+            font-size: 15px;
+            font-weight: 700;
+            text-align: center;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+        }
+
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+
+        .status-badge.on {
+            background: rgba(46, 213, 115, 0.15);
+            color: #1b5e20;
+        }
+
+        .status-badge.off {
+            background: rgba(244, 67, 54, 0.15);
+            color: #c62828;
+        }
+
+        .section-title {
+            color: #1b5e20;
+            font-size: 13px;
+            font-weight: 700;
+            margin-bottom: 12px;
+            padding-left: 4px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .schedule-grid {
+            display: grid;
+            gap: 10px;
+        }
+
+        .schedule-item {
+            background: #fff;
+            border-radius: 12px;
+            padding: 12px 14px;
+            border-left: 4px solid;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+            transition: all 0.3s;
+        }
+
+        .schedule-item:hover {
+            transform: translateX(4px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+        }
+
+        .schedule-item.morning {
+            border-left-color: #ff9800;
+        }
+
+        .schedule-item.noon {
+            border-left-color: #f44336;
+        }
+
+        .schedule-item.evening {
+            border-left-color: #9c27b0;
+        }
+
+        .schedule-item.bedtime {
+            border-left-color: #2196f3;
+        }
+
+        .schedule-item-left {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .schedule-icon {
+            font-size: 22px;
+        }
+
+        .schedule-info {
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+        }
+
+        .schedule-item-label {
+            font-size: 13px;
+            font-weight: 700;
+            color: #333;
+        }
+
+        .schedule-item-timing {
+            font-size: 10px;
+            color: #2ed573;
+            font-weight: 500;
+        }
+
+        .schedule-item-time {
+            font-size: 18px;
+            font-weight: 700;
+            color: #1b5e20;
+        }
+
+        .empty-schedule {
+            text-align: center;
+            padding: 32px 20px;
+            background: rgba(46, 213, 115, 0.05);
+            border-radius: 12px;
+            border: 2px dashed rgba(46, 213, 115, 0.3);
+        }
+
+        .empty-schedule-icon {
+            font-size: 48px;
+            margin-bottom: 12px;
+            opacity: 0.5;
+        }
+
+        .empty-schedule-text {
+            color: #999;
+            font-size: 13px;
+            line-height: 1.6;
+        }
+
+        .footer {
+            text-align: center;
+            margin-top: 16px;
+            padding-top: 14px;
+            border-top: 1px solid rgba(46, 213, 115, 0.1);
+            font-size: 10px;
+            color: #999;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="card">
+        <div class="header">
+            <h1>
+                <span>📋</span>
+                <span>ตารางการจ่ายยา</span>
+            </h1>
+        </div>
+
+        <div class="content">
+            <div class="info-section">
+                <div class="medicine-name" id="medNameDisplay">
+                    <span>💊</span>
+                    <span>ตารางการจ่ายยา</span>
+                </div>
+                <div style="text-align: center;">
+                    <span class="status-badge off" id="statusBadge">
+                        <span>🔴</span>
+                        <span>ปิดใช้งาน</span>
+                    </span>
+                </div>
+            </div>
+
+            <div class="section-title">
+                <span>⏰</span>
+                <span>รายการ</span>
+            </div>
+
+            <div class="schedule-grid" id="scheduleListContent">
+                <div class="empty-schedule">
+                    <div class="empty-schedule-icon">💊</div>
+                    <div class="empty-schedule-text">
+                        ยังไม่มีตารางการจ่ายยา<br>
+                        <span style="font-size: 10px; color: #ccc;">กรุณาตั้งค่าจากหน้าหลัก</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="footer">
+                อัปเดตอัตโนมัติจาก Dashboard
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // อ่านค่าจาก Shadow
+        var medicineName = "${#["esp32cam_dispenser"]["shadow"]["medicineName"]}";
+        var scheduleEnabled = ${#["esp32cam_dispenser"]["shadow"]["scheduleEnabled"] };
+
+        var dose1_time = "${#["esp32cam_dispenser"]["shadow"]["dose1_time"]}";
+        var dose1_timing = "${#["esp32cam_dispenser"]["shadow"]["dose1_timing"]}";
+
+        var dose2_time = "${#["esp32cam_dispenser"]["shadow"]["dose2_time"]}";
+        var dose2_timing = "${#["esp32cam_dispenser"]["shadow"]["dose2_timing"]}";
+
+        var dose3_time = "${#["esp32cam_dispenser"]["shadow"]["dose3_time"]}";
+        var dose3_timing = "${#["esp32cam_dispenser"]["shadow"]["dose3_timing"]}";
+
+        var dose4_time = "${#["esp32cam_dispenser"]["shadow"]["dose4_time"]}";
+
+        function getTimingText(timing) {
+            if (timing === "before") return "ก่อนอาหาร";
+            if (timing === "after") return "หลังอาหาร";
+            return "";
+        }
+
+        function updateDisplay() {
+            // แสดงชื่อยา
+            if (medicineName && medicineName !== "undefined" && medicineName !== "ยา") {
+                document.getElementById('medNameDisplay').innerHTML = '<span>💊</span><span>' + medicineName + '</span>';
+            }
+
+            // แสดงสถานะ
+            var badge = document.getElementById('statusBadge');
+            if (scheduleEnabled == 1) {
+                badge.className = 'status-badge on';
+                badge.innerHTML = '<span>🟢</span><span>เปิดใช้งาน</span>';
+            } else {
+                badge.className = 'status-badge off';
+                badge.innerHTML = '<span>🔴</span><span>ปิดใช้งาน</span>';
+            }
+
+            // สร้างลิสต์ตาราง
+            var html = '';
+            var count = 0;
+
+            var doses = [
+                { time: dose1_time, timing: dose1_timing, label: 'เช้า', icon: '🌅', class: 'morning' },
+                { time: dose2_time, timing: dose2_timing, label: 'กลางวัน', icon: '☀️', class: 'noon' },
+                { time: dose3_time, timing: dose3_timing, label: 'เย็น', icon: '🌆', class: 'evening' },
+                { time: dose4_time, timing: 'none', label: 'ก่อนนอน', icon: '🌙', class: 'bedtime' }
+            ];
+
+            doses.forEach(function (dose) {
+                if (dose.time && dose.time !== "undefined") {
+                    var timingText = getTimingText(dose.timing);
+                    html += '<div class="schedule-item ' + dose.class + '">';
+                    html += '<div class="schedule-item-left">';
+                    html += '<span class="schedule-icon">' + dose.icon + '</span>';
+                    html += '<div class="schedule-info">';
+                    html += '<div class="schedule-item-label">' + dose.label + '</div>';
+                    if (timingText) {
+                        html += '<div class="schedule-item-timing">' + timingText + '</div>';
+                    }
+                    html += '</div>';
+                    html += '</div>';
+                    html += '<div class="schedule-item-time">' + dose.time + '</div>';
+                    html += '</div>';
+                    count++;
+                }
+            });
+
+            if (count === 0) {
+                html = '<div class="empty-schedule">';
+                html += '<div class="empty-schedule-icon">💊</div>';
+                html += '<div class="empty-schedule-text">';
+                html += 'ยังไม่มีตารางการจ่ายยา<br>';
+                html += '<span style="font-size: 10px; color: #ccc;">กรุณาตั้งค่าจากหน้าหลัก</span>';
+                html += '</div></div>';
+            }
+
+            document.getElementById('scheduleListContent').innerHTML = html;
+        }
+
+        updateDisplay();
+    </script>
+</body>
+
+</html>
+</file>
+
+<file path="widget_test_communication.html">
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, sans-serif;
+            padding: 20px;
+            background: #0d1526;
+        }
+
+        .card {
+            background: linear-gradient(145deg, #1a2744, #0d1526);
+            border-radius: 20px;
+            padding: 30px;
+            max-width: 400px;
+            margin: 0 auto;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        .title {
+            color: #fff;
+            font-size: 24px;
+            font-weight: 700;
+            text-align: center;
+            margin-bottom: 10px;
+        }
+
+        .subtitle {
+            color: #8892b0;
+            font-size: 14px;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .status {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            padding: 15px;
+            margin-bottom: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .status-label {
+            color: #8892b0;
+            font-size: 12px;
+            margin-bottom: 5px;
+        }
+
+        .status-value {
+            color: #5fc3e4;
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        .btn {
+            width: 100%;
+            padding: 20px;
+            border-radius: 14px;
+            border: none;
+            font-size: 18px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.3s;
+            margin-bottom: 15px;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+        }
+
+        .btn-dispense {
+            background: linear-gradient(135deg, #2ed573, #26de81);
+            color: #fff;
+        }
+
+        .btn-dispense:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 12px 32px rgba(46, 213, 115, 0.4);
+        }
+
+        .btn-test {
+            background: linear-gradient(135deg, #5fc3e4, #3498db);
+            color: #fff;
+        }
+
+        .btn-test:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 12px 32px rgba(95, 195, 228, 0.4);
+        }
+
+        .log {
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 10px;
+            padding: 15px;
+            color: #5fc3e4;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            max-height: 200px;
+            overflow-y: auto;
+            margin-top: 20px;
+        }
+
+        .log-entry {
+            margin-bottom: 5px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            padding-bottom: 5px;
+        }
+
+        .timestamp {
+            color: #8892b0;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="card">
+        <div class="title">🧪 ทดสอบการเชื่อมต่อ</div>
+        <div class="subtitle">กดปุ่มแล้วดู Serial Monitor</div>
+
+        <div class="status">
+            <div class="status-label">Device Status</div>
+            <div class="status-value" id="deviceStatus">Checking...</div>
+        </div>
+
+        <button class="btn btn-dispense" onclick="testDispense()">
+            💊 จ่ายยาทันที (Dispense Now)
+        </button>
+
+        <button class="btn btn-test" onclick="testMessage()">
+            📡 ส่งข้อความทดสอบ
+        </button>
+
+        <div class="log" id="logBox">
+            <div class="log-entry">
+                <span class="timestamp">[Log]</span> กดปุ่มเพื่อทดสอบ...
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // อ่านสถานะจาก Shadow
+        var deviceStatus = "${#["esp32cam_dispenser"]["shadow"]["status"]}";
+
+        function updateStatus() {
+            var statusEl = document.getElementById('deviceStatus');
+            if (deviceStatus && deviceStatus !== "undefined") {
+                statusEl.textContent = "✅ Online - Status: " + deviceStatus;
+                statusEl.style.color = "#2ed573";
+            } else {
+                statusEl.textContent = "⚠️ ไม่พบ Shadow Data";
+                statusEl.style.color = "#ffa502";
+            }
+        }
+
+        function addLog(message) {
+            var logBox = document.getElementById('logBox');
+            var now = new Date();
+            var time = now.getHours() + ':' +
+                (now.getMinutes() < 10 ? '0' : '') + now.getMinutes() + ':' +
+                (now.getSeconds() < 10 ? '0' : '') + now.getSeconds();
+
+            var entry = document.createElement('div');
+            entry.className = 'log-entry';
+            entry.innerHTML = '<span class="timestamp">[' + time + ']</span> ' + message;
+            logBox.appendChild(entry);
+            logBox.scrollTop = logBox.scrollHeight;
+        }
+
+        function testDispense() {
+            addLog('📤 ส่งคำสั่ง: Dispense Now');
+
+            // ส่งคำสั่งไปยัง Shadow
+            #["esp32cam_dispenser"].writeShadow("dispenseCommand", 1);
+
+            // Reset หลัง 500ms
+            setTimeout(function () {
+                #["esp32cam_dispenser"].writeShadow("dispenseCommand", 0);
+                addLog('✅ คำสั่งส่งแล้ว - ตรวจสอบ Serial Monitor');
+            }, 500);
+        }
+
+        function testMessage() {
+            addLog('📤 ส่งข้อความทดสอบ');
+
+            // ส่งข้อความทดสอบ
+            #["esp32cam_dispenser"].writeShadow("testMessage", "Hello from Dashboard!");
+
+            setTimeout(function () {
+                addLog('✅ ข้อความส่งแล้ว - ดู Serial Monitor');
+            }, 300);
+        }
+
+        // อัปเดตสถานะเมื่อโหลด
+        updateStatus();
+        addLog('🚀 Widget พร้อมใช้งาน');
+    </script>
+</body>
+
+</html>
+</file>
+
+</files>
