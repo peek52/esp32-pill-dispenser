@@ -16,6 +16,7 @@ enum Screen {
   SCREEN_WIFI_SCAN,        // Show available networks
   SCREEN_WIFI_OSK,         // On-Screen Keyboard for password
   SCREEN_WIFI_PORTAL,      // Showing instructions for Captive Portal
+  SCREEN_NAME_OSK,         // On-Screen Keyboard for module names
   SCREEN_DISPENSING,
   SCREEN_RESULT
 };
@@ -25,8 +26,9 @@ enum Screen {
 // ============================================================
 void uiSetup(void);
 void uiLoop(void);
-void uiShowDispensing(int moduleIndex);
-void uiShowResult(int timeSlotIndex, bool success);
+void uiSetDispensingScreen(int moduleIndex);
+void uiSetResultScreen(bool success);
+void uiGoHome(void);
 void uiShowConfirmDispense(int timeSlotIndex);
 
 // Callback for manual dispense
@@ -36,3 +38,7 @@ void uiSetManualDispenseCallback(ManualDispenseCallback cb);
 // Callback for confirming scheduled dispense
 typedef void (*ConfirmDispenseCallback)(int timeSlotIndex);
 void uiSetConfirmDispenseCallback(ConfirmDispenseCallback cb);
+
+// Callback for module name changes
+typedef void (*NameChangeCallback)(int moduleIndex, const char *newName);
+void uiSetNameChangeCallback(NameChangeCallback cb);

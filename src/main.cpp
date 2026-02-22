@@ -8,12 +8,12 @@
 #include "telegram_messages.h" // Internet
 #include "ui_manager.h"
 #include "wifi_manager.h"
+#include "audio_manager.h" // Added by instruction
 #include <Arduino.h>
 #include <Network.h>
 #include <SPI.h>
 #include <WiFi.h>
 #include <Wire.h>
-
 
 // ============================================================
 // Forward declarations
@@ -21,50 +21,132 @@
 void onNetpieDispenseSlot(int moduleIndex);
 
 // ============================================================
-// Display / Dispense Logic
+// Dispense State Machine (Non-blocking)
 // ============================================================
-void onConfirmedDispense(int timeSlotIndex) {
-  Serial.printf("[Main] User confirmed dispense for slot %d\n", timeSlotIndex);
+enum DispenseState {
+  STATE_IDLE,
+  STATE_START_DISPENSE,
+  STATE_WAIT_SERVO,
+  STATE_SHOW_RESULT,
+  STATE_WAIT_RESULT
+};
 
-  int dispensed = 0;
-  String medNames = "";
+struct DispenseJob {
+  bool active;
+  DispenseState state;
+  int timeSlotIndex; // -1 if remote single module
+  int currentModule;
+  unsigned long timer;
+};
 
-  for (int m = 0; m < NUM_MODULES; m++) {
-    MedModule &mod = moduleGet(m);
-    if (mod.slotMask & (1 << timeSlotIndex)) {
-      Serial.printf("[Main] Dispensing module %d (%s)\n", m, mod.name);
+static DispenseJob dJob = {false, STATE_IDLE, -1, 0, 0};
 
-      // Show dispensing animation
-      uiShowDispensing(m);
+void processDispenseJob() {
+  if (!dJob.active)
+    return;
 
-      // Activate servo
-      servoDispense(m);
+  switch (dJob.state) {
+  case STATE_START_DISPENSE:
+    if (dJob.timeSlotIndex != -1) {
+      while (dJob.currentModule < NUM_MODULES) {
+        MedModule &mod = moduleGet(dJob.currentModule);
+        if ((mod.slotMask & (1 << dJob.timeSlotIndex)) && mod.qty > 0) {
+          break;
+        }
+        dJob.currentModule++;
+      }
+    }
 
-      // Decrement qty
+    if (dJob.currentModule >= NUM_MODULES) {
+      dJob.state = STATE_SHOW_RESULT;
+    } else {
+      uiSetDispensingScreen(dJob.currentModule);
+      servoStartDispense(dJob.currentModule);
+      dJob.state = STATE_WAIT_SERVO;
+    }
+    break;
+
+  case STATE_WAIT_SERVO: {
+    DispenseStatus st = servoGetDispenseStatus();
+    if (st == DISPENSE_BUSY)
+      break; // still dispensing
+
+    MedModule &mod = moduleGet(dJob.currentModule);
+
+    if (st == DISPENSE_SUCCESS) {
       if (mod.qty > 0) {
         mod.qty--;
-        updateShadowKey("med" + String(m + 1) + "_count", mod.qty);
+        String logData = (dJob.timeSlotIndex != -1)
+                             ? ("slot:" + String(dJob.timeSlotIndex) +
+                                ",module:" + String(dJob.currentModule))
+                             : ("remote,module:" + String(dJob.currentModule));
+        addToOfflineQueue("dispense", logData);
+        updateShadowKey("med" + String(dJob.currentModule + 1) + "_count",
+                        mod.qty);
       }
-
-      medNames += String(mod.name) + " ";
-      dispensed++;
+    } else { // DISPENSE_EMPTY (Failed after retries)
+      String logData = "error_jammed,module:" + String(dJob.currentModule);
+      addToOfflineQueue("error", logData);
+      updateShadowOfflineAware("error", "Module " +
+                                            String(dJob.currentModule + 1) +
+                                            " Dispense Failed!");
+      if (wifiIsConnected()) {
+        sendTelegramNotification("⚠️ แจ้งเตือน: เกิดข้อผิดพลาด! ยาในกล่อง [" +
+                                 String(mod.name) +
+                                 "] จ่ายไม่ออกหรือเกิดการติดขัด (Dispense Failed)");
+      }
     }
-  }
 
-  // Save updated quantities
-  if (dispensed > 0) {
+    if (dJob.timeSlotIndex != -1) {
+      dJob.currentModule++;
+      dJob.state = STATE_START_DISPENSE;
+    } else {
+      if (st == DISPENSE_SUCCESS) {
+        updateShadowOfflineAware("success",
+                                 "Remote Dispense: " + String(mod.name));
+        if (wifiIsConnected()) {
+          sendTelegramNotification(String(MSG_DISPENSE_SUCCESS) + "\n" +
+                                   String(mod.name) + " (สั่งงานระยะไกล)");
+        }
+      }
+      dJob.currentModule = NUM_MODULES; // Force end
+      dJob.state = STATE_SHOW_RESULT;
+    }
+  } break;
+
+  case STATE_SHOW_RESULT:
     schedulerSave();
-    uiShowResult(timeSlotIndex, true);
-    if (wifiIsConnected()) {
-      sendTelegramNotification(String(MSG_DISPENSE_SUCCESS) +
-                               "\nรายการ: " + medNames + "\n(รับยาหน้าเครื่อง)");
+    updateShadowOfflineAware("status", "idle");
+    updateShadowOfflineAware("waiting_confirm", "");
+    uiSetResultScreen(true);
+    dJob.timer = millis();
+    dJob.state = STATE_WAIT_RESULT;
+    break;
+
+  case STATE_WAIT_RESULT:
+    if (millis() - dJob.timer >= 3000) {
+      uiGoHome();
+      dJob.active = false;
+      dJob.state = STATE_IDLE;
     }
-    updateShadowOfflineAware("success",
-                             "Dispensed from slot " + String(timeSlotIndex));
-  } else {
-    Serial.println("[Main] No modules assigned to this slot");
-    uiShowResult(timeSlotIndex, false);
+    break;
+
+  case STATE_IDLE:
+    break;
   }
+}
+
+void onConfirmedDispense(int timeSlotIndex) {
+  Serial.printf("[Main] User confirmed dispense for slot %d\n", timeSlotIndex);
+  if (dJob.active)
+    return;
+
+  dJob.active = true;
+  dJob.timeSlotIndex = timeSlotIndex;
+  dJob.currentModule = 0;
+  dJob.state = STATE_START_DISPENSE;
+
+  updateShadowOfflineAware("status", "dispensing");
 }
 
 // ============================================================
@@ -85,6 +167,9 @@ void onDispenseTrigger(int timeSlotIndex) {
   }
 
   if (assignedCount > 0) {
+    // Play dispense notification sound
+    audioPlay(2);
+
     // Wait for user confirmation instead of dispensing immediately
     uiShowConfirmDispense(timeSlotIndex);
 
@@ -123,24 +208,21 @@ void onManualDispense(int moduleIndex) {
 // ============================================================
 void onNetpieDispenseSlot(int moduleIndex) {
   if (moduleIndex >= 0 && moduleIndex < NUM_MODULES) {
-    uiShowDispensing(moduleIndex);
-    servoDispense(moduleIndex);
+    if (dJob.active)
+      return;
 
     MedModule &mod = moduleGet(moduleIndex);
-    if (mod.qty > 0) {
-      mod.qty--;
-      schedulerSave();
-      updateShadowKey("med" + String(moduleIndex + 1) + "_count", mod.qty);
+    if (mod.qty <= 0) {
+      Serial.printf("[Main] Module %d is empty, ignoring remote dispense\n",
+                    moduleIndex);
+      return; // Cannot dispense an empty module
     }
 
-    updateShadowOfflineAware("success", "Remote Dispense: " + String(mod.name));
-    if (wifiIsConnected()) {
-      sendTelegramNotification(String(MSG_DISPENSE_SUCCESS) + "\n" +
-                               String(mod.name) + " (สั่งงานระยะไกล)");
-    }
-
-    // Jump back to home screen after Dispensing UI closes
-    uiShowResult(0, true);
+    dJob.active = true;
+    dJob.timeSlotIndex = -1;
+    dJob.currentModule = moduleIndex;
+    dJob.state = STATE_START_DISPENSE;
+    updateShadowOfflineAware("status", "dispensing");
   }
 }
 
@@ -245,6 +327,20 @@ void processTelegramCommand(String command) {
 }
 
 // ============================================================
+// ============================================================
+// Network Task (Core 0)
+// ============================================================
+void networkTask(void *pvParameters) {
+  for (;;) {
+    if (wifiIsConnected()) {
+      netpieLoop();
+      telegramLoop();
+    }
+    vTaskDelay(pdMS_TO_TICKS(50)); // Yield to other tasks
+  }
+}
+
+// ============================================================
 // Setup
 // ============================================================
 void setup() {
@@ -252,27 +348,35 @@ void setup() {
   delay(1000);
   Serial.println("\n=== Medicine Dispenser Starting ===");
 
-  // I2C Bus for UI Touch & Servos & RTC
-  Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
-  Wire.setClock(400000);
-  Serial.printf("[I2C] Bus OK — SDA=%d, SCL=%d\n", I2C_SDA_PIN, I2C_SCL_PIN);
-
   // GPIO
   pinMode(BUTTON_PIN, INPUT_PULLUP);
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LOW);
 
-  // Core Subsystems
+  // 1. Core Subsystems - Display First
   displaySetup();
+
+  // 2. I2C Bus for Servos & RTC (LovyanGFX already set up the pins internally)
+  Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+  Wire.setClock(400000);
+  Serial.printf("[I2C] Bus Attached — SDA=%d, SCL=%d\n", I2C_SDA_PIN,
+                I2C_SCL_PIN);
+
+  // 3. Other Core Subsystems
   servoSetup();
   wifiSetup();
   schedulerSetup();
   schedulerSetCallback(onDispenseTrigger);
+  schedulerSetWarnCallback([](int slot) { audioPlay(1); });
+  audioSetup();
 
   // UI Setup
   uiSetup();
   uiSetManualDispenseCallback(onManualDispense);
   uiSetConfirmDispenseCallback(onConfirmedDispense);
+  uiSetNameChangeCallback([](int moduleIndex, const char *newName) {
+    updateShadowKey("med" + String(moduleIndex + 1) + "_name", String(newName));
+  });
 
   // Internet & Logging Setup
   offlineSetup();
@@ -283,6 +387,15 @@ void setup() {
 
   telegramSetup();
   setTelegramCommandCallback(processTelegramCommand);
+
+  // Start Network Task on Core 0
+  xTaskCreatePinnedToCore(networkTask,   /* Task function. */
+                          "NetworkTask", /* name of task. */
+                          16384,         /* Stack size of task */
+                          NULL,          /* parameter of the task */
+                          1,             /* priority of the task */
+                          NULL,          /* Task handle */
+                          0);            /* pin task to core 0 */
 
   Serial.println("=== Setup Complete ===");
 }
@@ -295,11 +408,52 @@ void loop() {
   schedulerLoop();
   wifiLoop();
 
-  // Run internet tasks if connected
-  if (wifiIsConnected()) {
-    netpieLoop();
-    telegramLoop();
+  // Network loops (Netpie/Telegram) are now handled in networkTask on Core 0
+
+  servoLoop();
+  processDispenseJob();
+
+  // ============================================================
+  // Physical Button Logic
+  // Short Press: Dispense Module 0
+  // Long Press (5s): Reset WiFi credentials
+  // ============================================================
+  static unsigned long btnPressStart = 0;
+  static bool btnIsPressed = false;
+  static bool longPressHandled = false;
+  static unsigned long lastDebounceTime = 0;
+  static int lastBtnState = HIGH;
+
+  int reading = digitalRead(BUTTON_PIN);
+
+  if (reading != lastBtnState) {
+    lastDebounceTime = millis();
   }
+
+  if ((millis() - lastDebounceTime) > 50) {
+    // State has stabilized
+    if (reading == LOW && !btnIsPressed) {
+      // Button just went down
+      btnIsPressed = true;
+      btnPressStart = millis();
+      longPressHandled = false;
+    } else if (reading == LOW && btnIsPressed) {
+      // Button is being held down
+      if (!longPressHandled && (millis() - btnPressStart > 5000)) {
+        Serial.println("[Button] Long press detected - Forgetting WiFi!");
+        wifiForget();
+        longPressHandled = true;
+      }
+    } else if (reading == HIGH && btnIsPressed) {
+      // Button just released
+      if (!longPressHandled && (millis() - btnPressStart > 50)) {
+        Serial.println("[Button] Short press detected - Manual Dispense!");
+        onManualDispense(0);
+      }
+      btnIsPressed = false;
+    }
+  }
+  lastBtnState = reading;
 
   delay(10);
 }

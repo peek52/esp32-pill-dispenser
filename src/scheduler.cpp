@@ -12,7 +12,9 @@ static Preferences prefs;
 static TimeSlot timeSlots[NUM_TIME_SLOTS];
 static MedModule modules[NUM_MODULES];
 static SchedDispenseCallback dispenseCallback = nullptr;
+static SchedWarnCallback warnCallback = nullptr;
 static bool dispensedToday[NUM_TIME_SLOTS] = {false};
+static bool warnedToday[NUM_TIME_SLOTS] = {false};
 static uint8_t lastMinute = 99;
 static bool masterEnabled = true;
 
@@ -42,6 +44,28 @@ void schedulerSetup(void) {
 }
 
 // ============================================================
+// Sync Time with NTP
+// ============================================================
+void schedulerSyncNTP(void) {
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo, 5000)) {
+    Serial.println("[RTC] Failed to obtain time from NTP");
+    return;
+  }
+  
+  Serial.printf("[RTC] Received NTP Time: %04d-%02d-%02d %02d:%02d:%02d\n",
+                timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+                timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+
+  if (rtcFound) {
+    rtc.adjust(DateTime(timeinfo.tm_year + 1900, timeinfo.tm_mon + 1,
+                        timeinfo.tm_mday, timeinfo.tm_hour, timeinfo.tm_min,
+                        timeinfo.tm_sec));
+    Serial.println("[RTC] DS3231 updated from NTP.");
+  }
+}
+
+// ============================================================
 // Loop — check if any time slot triggers
 // ============================================================
 void schedulerLoop(void) {
@@ -59,25 +83,45 @@ void schedulerLoop(void) {
 
   // Reset at midnight
   if (h == 0 && m == 0) {
-    for (int i = 0; i < NUM_TIME_SLOTS; i++)
+    for (int i = 0; i < NUM_TIME_SLOTS; i++) {
       dispensedToday[i] = false;
+      warnedToday[i] = false;
+    }
   }
 
   // Check each time slot
+  int nowMin = h * 60 + m;
   for (int i = 0; i < NUM_TIME_SLOTS; i++) {
     if (!timeSlots[i].enabled)
       continue;
-    if (dispensedToday[i])
-      continue;
-    if (timeSlots[i].hour == h && timeSlots[i].minute == m) {
-      dispensedToday[i] = true;
-      Serial.printf("[Scheduler] Trigger slot %d at %02d:%02d\n", i, h, m);
-      if (dispenseCallback) {
-        dispenseCallback(i);
+      
+    int slotMin = timeSlots[i].hour * 60 + timeSlots[i].minute;
+    int diff = slotMin - nowMin;
+    if (diff < 0) diff += 1440; // Handle day wrap
+    
+    // Warning 10 mins before
+    if (diff == 10 && !warnedToday[i]) {
+      warnedToday[i] = true;
+      Serial.printf("[Scheduler] Warning slot %d (10 mins before)\n", i);
+      if (warnCallback) {
+        warnCallback(i);
+      }
+    }
+
+    if (!dispensedToday[i]) {
+      if (timeSlots[i].hour == h && timeSlots[i].minute == m) {
+        dispensedToday[i] = true;
+        warnedToday[i] = true; // In case we missed the warning window
+        Serial.printf("[Scheduler] Trigger slot %d at %02d:%02d\n", i, h, m);
+        if (dispenseCallback) {
+          dispenseCallback(i);
+        }
       }
     }
   }
 }
+
+void schedulerSetWarnCallback(SchedWarnCallback cb) { warnCallback = cb; }
 
 // ============================================================
 // Time Slot CRUD
@@ -278,3 +322,4 @@ bool schedulerHasRTC(void) { return rtcFound; }
 void schedulerSetCallback(SchedDispenseCallback cb) { dispenseCallback = cb; }
 bool schedulerIsEnabled(void) { return masterEnabled; }
 void schedulerSetEnabled(bool en) { masterEnabled = en; }
+

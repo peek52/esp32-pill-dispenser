@@ -1,14 +1,53 @@
 #include "wifi_manager.h"
 #include "config.h"
+#include "scheduler.h"
 #include <Network.h>
 #include <WiFi.h>
 #include <WiFiManager.h>
+#include <esp_sntp.h>
+#include <time.h>
+
 
 static WiFiManager wm;
 static bool manualConnectPending = false;
 static String targetSSID = "";
 static String targetPass = "";
 static unsigned long manualConnectStartMs = 0;
+static bool hasSyncedNTPOnBoot = false;
+
+static volatile bool ntpSynced = false;
+
+void time_sync_notification_cb(struct timeval *tv) {
+  Serial.println("\n[WiFi] SNTP Sync Notification Received!");
+  ntpSynced = true;
+}
+
+void wifiSyncNTP() {
+  Serial.print("[WiFi] Syncing NTP Time...");
+  ntpSynced = false;
+
+  // Register callback so we know when the actual UDP response arrives,
+  // bypassing any fake "success" from the cached DS3231 RTC time.
+  sntp_set_time_sync_notification_cb(time_sync_notification_cb);
+  configTime(GMT_OFFSET_SEC, DAYLIGHT_OFFSET_SEC, NTP_SERVER);
+
+  int retry = 0;
+  // Wait up to 15 seconds for the SNTP callback to fire
+  while (!ntpSynced && retry < 30) {
+    Serial.print(".");
+    delay(500);
+    retry++;
+  }
+  Serial.println();
+
+  if (ntpSynced) {
+    Serial.println("[WiFi] NTP Sync successful.");
+    schedulerSyncNTP(); // Write guaranteed internet time to RTC
+  } else {
+    Serial.println(
+        "[WiFi] NTP Sync failed (timeout). Re-check network firewall/DNS.");
+  }
+}
 
 void wifiSetup(void) {
   // Set WiFi to station mode and disconnect from an AP if it was previously
@@ -25,12 +64,20 @@ void wifiLoop(void) {
   if (manualConnectPending) {
     if (WiFi.status() == WL_CONNECTED) {
       Serial.println("[WiFi] Manual connection successful!");
+      wifiSyncNTP();
       manualConnectPending = false;
-    } else if (millis() - manualConnectStartMs > 15000) {
+    } else if (millis() - manualConnectStartMs > 20000) {
       Serial.println(
           "[WiFi] Manual connection timeout. Invalid password or no signal.");
       WiFi.disconnect();
       manualConnectPending = false;
+    }
+  } else {
+    // Background connection check
+    if (wifiIsConnected() && !hasSyncedNTPOnBoot) {
+      Serial.println("[WiFi] Detected background connection.");
+      wifiSyncNTP();
+      hasSyncedNTPOnBoot = true;
     }
   }
 }
@@ -76,6 +123,7 @@ void wifiStartPortal(void) {
   // If we get here, we are connected (or timeout hit)
   if (wifiIsConnected()) {
     Serial.printf("[WiFi] Connected! IP: %s\n", wifiGetIP().c_str());
+    wifiSyncNTP();
   }
 }
 
@@ -86,16 +134,14 @@ void wifiConnectManual(const char *ssid, const char *pass) {
   manualConnectPending = true;
   manualConnectStartMs = millis();
 
-  WiFi.mode(WIFI_STA);
-  WiFi.disconnect();
-  delay(100);
+  // Minimal commands to prevent esp-hosted re-init crash on ESP32-P4
   WiFi.begin(ssid, pass);
 }
 
 void wifiForget(void) {
   Serial.println("[WiFi] Forgetting credentials...");
   wm.resetSettings();
-  WiFi.disconnect(true, true);
+  WiFi.disconnect();
   delay(100);
   Serial.println("[WiFi] Forgotten.");
 }

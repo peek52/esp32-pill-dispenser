@@ -37,7 +37,7 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
   LOG_INFO("[NETPIE] Topic: %s", topic);
 
   // Buffer protection
-  char msg[2049];
+  static char msg[2049];
   unsigned int safeLen = (length < 2048) ? length : 2048;
   memcpy(msg, payload, safeLen);
   msg[safeLen] = '\0';

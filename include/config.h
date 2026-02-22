@@ -28,8 +28,8 @@
 #define CTP_INT_PIN 21
 
 // --- Button & LED ---
-#define BUTTON_PIN 22 // Original was GPIO 22
-#define LED_PIN 23    // Original was GPIO 23
+#define BUTTON_PIN 6
+#define LED_PIN 2
 
 // --- Display (Landscape Mode) ---
 #define LCD_WIDTH 480
@@ -49,6 +49,10 @@
 
 // --- Timings & Intervals ---
 #define BOT_CHECK_INTERVAL 1000 // เช็ค Telegram ทุก 1 วิ
+
+// --- DFPlayer Mini (Audio) ---
+#define DFPLAYER_ESP_TX_PIN 20 // Connects to DFPlayer RX
+#define DFPLAYER_ESP_RX_PIN 23 // Connects to DFPlayer TX
 
 // --- MQTT (NETPIE) ---
 #define MQTT_BROKER "mqtt.netpie.io"

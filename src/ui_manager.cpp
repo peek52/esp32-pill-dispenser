@@ -1,36 +1,38 @@
 #include "ui_manager.h"
+#include "audio_manager.h"
 #include "config.h"
 #include "display_module.h"
 #include "scheduler.h"
 #include "servo_control.h"
 #include "wifi_manager.h"
 #include <WiFi.h>
+#include <lgfx/v1/lgfx_fonts.hpp>
+
 
 // ============================================================
 // Color Palette — Light Mint "Production" Theme
 // ============================================================
-#define COL_BG       0xF7DE // Very light mint background
-#define COL_CARD     0xFFFF // Clean white for cards
-#define COL_PRIMARY  0x2652 // Teal/Mint (#20C997)
-#define COL_ACCENT   0x15D0 // Darker teal (#12B886)
-#define COL_SUCCESS  0x460A // Green (#40C057)
-#define COL_DANGER   0xFA8A // Red (#FA5252)
-#define COL_WARN     0xFC62 // Orange
-#define COL_TEXT     0x31C8 // Main texts (#343A40)
+#define COL_BG 0xF7DE       // Very light mint background
+#define COL_CARD 0xFFFF     // Clean white for cards
+#define COL_PRIMARY 0x2652  // Teal/Mint (#20C997)
+#define COL_ACCENT 0x15D0   // Darker teal (#12B886)
+#define COL_SUCCESS 0x460A  // Green (#40C057)
+#define COL_DANGER 0xFA8A   // Red (#FA5252)
+#define COL_WARN 0xFC62     // Orange
+#define COL_TEXT 0x31C8     // Main texts (#343A40)
 #define COL_TEXT_INV 0xFFFF // White text (for buttons/headers)
 #define COL_TEXT_DIM 0x8472 // Light gray for secondary text (#868E96)
-#define COL_BTN      0xEF7D // Default button bg (#E9ECEF)
-#define COL_BTN_ON   0x2652 // Active toggle
-#define COL_DIVIDER  0xDF1C // Subtle divider lines (#DEE2E6)
-#define COL_SHADOW   0xCE59 // Button shadow (#CED4DA)
+#define COL_BTN 0xEF7D      // Default button bg (#E9ECEF)
+#define COL_BTN_ON 0x2652   // Active toggle
+#define COL_DIVIDER 0xDF1C  // Subtle divider lines (#DEE2E6)
+#define COL_SHADOW 0xCE59   // Button shadow (#CED4DA)
 
 // ============================================================
+// Slot labels (Simplified with Symbols for Elderly)
 // ============================================================
-// Slot labels (English short)
-// ============================================================
-static const char *slotShort[NUM_TIME_SLOTS] = {"M.Bf", "M.Af", "N.Bf", "N.Af",
-                                                "E.Bf", "E.Af", "Bed"};
-static const char *periodName[] = {"Morning", "Noon", "Evening", "Bedtime"};
+static const char *slotShort[NUM_TIME_SLOTS] = {
+    "M.BFR", "M.AFT", "N.BFR", "N.AFT", "E.BFR", "E.AFT", "BED"};
+static const char *periodName[] = {"Morning", "Midday", "Evening", "Bedtime"};
 
 // Preset medicine names
 static const char *presetNames[] = {
@@ -71,12 +73,16 @@ static bool wifiScanning = false;
 static bool wifiNeedsScan = false;
 static String selectedSSID = "";
 static String inputPassword = "";
+static String inputName = "";
 static bool oskShift = false;
 static bool portalActive = false;
 
 void uiSetConfirmDispenseCallback(ConfirmDispenseCallback cb) {
   confirmCb = cb;
 }
+
+static NameChangeCallback nameChangeCb = nullptr;
+void uiSetNameChangeCallback(NameChangeCallback cb) { nameChangeCb = cb; }
 
 // ============================================================
 // Forward declarations
@@ -92,6 +98,7 @@ static void drawWifiMenu();
 static void drawWifiOSK();
 static void drawWifiPortal();
 static void drawWifiScan();
+static void drawNameOSK();
 static void touchHome(int x, int y);
 static void touchSchedule(int x, int y);
 static void touchTimePicker(int x, int y);
@@ -103,17 +110,32 @@ static void touchWifiMenu(int x, int y);
 static void touchWifiOSK(int x, int y);
 static void touchWifiPortal(int x, int y);
 static void touchWifiScan(int x, int y);
+static void touchNameOSK(int x, int y);
+static void touchConfirmDispense(int x, int y);
+static void touchWifiMenu(int x, int y);
+static void touchWifiOSK(int x, int y);
+static void touchWifiPortal(int x, int y);
+static void touchWifiScan(int x, int y);
 static void switchTo(Screen s);
 static void btn(int x, int y, int w, int h, const char *txt, uint16_t bg,
                 uint16_t fg);
 
+static bool confirmPressed = false;
+
 void uiShowConfirmDispense(int timeSlotIndex) {
   confirmSlotIdx = timeSlotIndex;
   confirmStartMs = millis();
+  confirmPressed = false;
   switchTo(SCREEN_CONFIRM_DISPENSE);
 }
 
 // ============================================================
+// Forward declarations
+// ============================================================
+static void drawWifiPortal();
+static void drawDispensing();
+static void drawResult();
+
 void uiSetup() {
   canvas.setPsram(true);
   canvas.setColorDepth(16);
@@ -130,34 +152,7 @@ void uiLoop() {
   // Live clock on home screen
   if (currentScreen == SCREEN_HOME && millis() - lastClockTick >= 1000) {
     lastClockTick = millis();
-    uint8_t h, m, s;
-    schedulerGetTime(h, m, s);
-
-    // Big time
-    char buf[9];
-    sprintf(buf, "%02d:%02d:%02d", h, m, s);
-    canvas.setFont(&fonts::FreeSansBold24pt7b);
-    canvas.setTextDatum(middle_center);
-    canvas.setTextColor(COL_TEXT, COL_BG);
-    canvas.fillRect(30, 68, 300, 55, COL_BG);
-    canvas.drawString(buf, 175, 95);
-
-    // Next schedule
-    canvas.setFont(&fonts::FreeSans12pt7b);
-    canvas.fillRect(30, 153, 300, 35, COL_BG);
-    canvas.setTextDatum(middle_center);
-    int next = schedulerNextSlot();
-    if (next >= 0) {
-      TimeSlot &ts = timeSlotGet(next);
-      char nb[40];
-      sprintf(nb, "Next: %s  %02d:%02d", slotShort[next], ts.hour, ts.minute);
-      canvas.setTextColor(COL_SUCCESS, COL_BG);
-      canvas.drawString(nb, 175, 172);
-    } else {
-      canvas.setTextColor(COL_TEXT_DIM, COL_BG);
-      canvas.drawString("No upcoming schedule", 175, 172);
-    }
-    canvas.pushSprite(&getDisplay(), 0, 0);
+    switchTo(SCREEN_HOME);
   }
 
   // Handle Captive Portal blocking wait
@@ -187,31 +182,19 @@ void uiLoop() {
     switchTo(SCREEN_WIFI_SCAN); // Redraw list
   }
 
-  // Handle Captive Portal blocking wait
-  if (currentScreen == SCREEN_WIFI_PORTAL && !portalActive) {
-    portalActive = true;
-    canvas.pushSprite(&getDisplay(), 0, 0); // Show "look at phone" text
-    wifiStartPortal();
-    portalActive = false;
-    switchTo(SCREEN_HOME);
-  }
-
-  // Handle WiFi Scan
-  if (currentScreen == SCREEN_WIFI_SCAN && wifiNeedsScan) {
-    wifiNeedsScan = false;
-    wifiScanning = true;
-    drawWifiScan();
-    canvas.pushSprite(&getDisplay(), 0, 0);
-
-    wifiScanCount = WiFi.scanNetworks();
-    if (wifiScanCount > 20)
-      wifiScanCount = 20;
-    for (int i = 0; i < wifiScanCount; i++) {
-      wifiNetworks[i] = WiFi.SSID(i);
+  // Animate dispensing screen
+  if (currentScreen == SCREEN_DISPENSING) {
+    static unsigned long lastAnimMs = 0;
+    if (millis() - lastAnimMs > 100) {
+      lastAnimMs = millis();
+      LGFX &lcd = getDisplay();
+      static int dispFrame = 0;
+      for (int f = 0; f < 8; f++) {
+        uint16_t color = (f == dispFrame) ? COL_PRIMARY : COL_BTN;
+        lcd.fillCircle(200 + f * 12, 200, 5, color);
+      }
+      dispFrame = (dispFrame + 1) % 8;
     }
-    wifiScanning = false;
-    wifiScanPage = 0;
-    switchTo(SCREEN_WIFI_SCAN); // Redraw list
   }
 
   // Handle countdown on confirm screen
@@ -225,49 +208,75 @@ void uiLoop() {
     }
   }
 
-  // Touch
+  // Touch Polling with State Tracking
+  static bool wasTouched = false;
+  static unsigned long touchStartMs = 0;
+  static int lastTouchX = -1;
+  static int lastTouchY = -1;
   lgfx::touch_point_t tp;
-  if (lcd.getTouch(&tp)) {
-    if (millis() - lastTouchMs < DEBOUNCE)
-      return;
-    lastTouchMs = millis();
-    Serial.printf("[Touch] x=%d y=%d screen=%d\n", tp.x, tp.y, currentScreen);
-    switch (currentScreen) {
-    case SCREEN_HOME:
-      touchHome(tp.x, tp.y);
-      break;
-    case SCREEN_SCHEDULE:
-      touchSchedule(tp.x, tp.y);
-      break;
-    case SCREEN_TIME_PICKER:
-      touchTimePicker(tp.x, tp.y);
-      break;
-    case SCREEN_MODULES:
-      touchModules(tp.x, tp.y);
-      break;
-    case SCREEN_MODULE_DETAIL:
-      touchModuleDetail(tp.x, tp.y);
-      break;
-    case SCREEN_MANUAL_DISPENSE:
-      touchManualDispense(tp.x, tp.y);
-      break;
-    case SCREEN_CONFIRM_DISPENSE:
-      touchConfirmDispense(tp.x, tp.y);
-      break;
-    case SCREEN_WIFI_MENU:
-      touchWifiMenu(tp.x, tp.y);
-      break;
-    case SCREEN_WIFI_SCAN:
-      touchWifiScan(tp.x, tp.y);
-      break;
-    case SCREEN_WIFI_OSK:
-      touchWifiOSK(tp.x, tp.y);
-      break;
-    case SCREEN_WIFI_PORTAL:
-      touchWifiPortal(tp.x, tp.y);
-      break;
-    default:
-      break;
+
+  bool isTouched = lcd.getTouch(&tp);
+
+  if (isTouched) {
+    // Save valid coordinates as long as finger is on screen
+    lastTouchX = tp.x;
+    lastTouchY = tp.y;
+    if (!wasTouched) {
+      // Finger just went down
+      wasTouched = true;
+      touchStartMs = millis();
+    }
+  } else if (!isTouched && wasTouched) {
+    // Finger just lifted
+    wasTouched = false;
+    unsigned long touchDuration = millis() - touchStartMs;
+
+    // Only register a tap if it was held for a minimum duration to avoid noise,
+    // but without blocking the main loop.
+    if (touchDuration > 20 && (millis() - lastTouchMs >= DEBOUNCE)) {
+      lastTouchMs = millis();
+      Serial.printf("[Touch Release] x=%d y=%d screen=%d duration=%lu ms\n",
+                    lastTouchX, lastTouchY, currentScreen, touchDuration);
+      switch (currentScreen) {
+      case SCREEN_HOME:
+        touchHome(lastTouchX, lastTouchY);
+        break;
+      case SCREEN_SCHEDULE:
+        touchSchedule(lastTouchX, lastTouchY);
+        break;
+      case SCREEN_TIME_PICKER:
+        touchTimePicker(lastTouchX, lastTouchY);
+        break;
+      case SCREEN_MODULES:
+        touchModules(lastTouchX, lastTouchY);
+        break;
+      case SCREEN_MODULE_DETAIL:
+        touchModuleDetail(lastTouchX, lastTouchY);
+        break;
+      case SCREEN_MANUAL_DISPENSE:
+        touchManualDispense(lastTouchX, lastTouchY);
+        break;
+      case SCREEN_CONFIRM_DISPENSE:
+        touchConfirmDispense(lastTouchX, lastTouchY);
+        break;
+      case SCREEN_WIFI_MENU:
+        touchWifiMenu(lastTouchX, lastTouchY);
+        break;
+      case SCREEN_WIFI_SCAN:
+        touchWifiScan(lastTouchX, lastTouchY);
+        break;
+      case SCREEN_WIFI_OSK:
+        touchWifiOSK(lastTouchX, lastTouchY);
+        break;
+      case SCREEN_WIFI_PORTAL:
+        touchWifiPortal(lastTouchX, lastTouchY);
+        break;
+      case SCREEN_NAME_OSK:
+        touchNameOSK(lastTouchX, lastTouchY);
+        break;
+      default:
+        break;
+      }
     }
   }
 }
@@ -310,6 +319,15 @@ static void switchTo(Screen s) {
   case SCREEN_WIFI_PORTAL:
     drawWifiPortal();
     break;
+  case SCREEN_NAME_OSK:
+    drawNameOSK();
+    break;
+  case SCREEN_DISPENSING:
+    drawDispensing();
+    break;
+  case SCREEN_RESULT:
+    drawResult();
+    break;
   default:
     break;
   }
@@ -337,7 +355,7 @@ static void btn(int x, int y, int w, int h, const char *txt, uint16_t bg,
 }
 
 static void drawShadowCard(int x, int y, int w, int h) {
-  canvas.fillRoundRect(x, y+3, w, h, 8, COL_SHADOW);
+  canvas.fillRoundRect(x, y + 3, w, h, 8, COL_SHADOW);
   canvas.fillRoundRect(x, y, w, h, 8, COL_CARD);
   // canvas.drawRoundRect(x, y, w, h, 8, COL_DIVIDER); // Optional subtle border
 }
@@ -354,14 +372,14 @@ static void drawHome() {
   lcd.setFont(&fonts::FreeSansBold12pt7b);
   lcd.setTextDatum(middle_center);
   lcd.setTextColor(COL_TEXT_INV, COL_PRIMARY);
-  lcd.drawString("Medicine Dispenser", 240, 22);
+  lcd.drawString("Auto Dispenser", 240, 22);
 
   // --- Left side: Clock ---
   uint8_t h, m, s;
   schedulerGetTime(h, m, s);
   char timeBuf[9];
   sprintf(timeBuf, "%02d:%02d:%02d", h, m, s);
-  lcd.setFont(&fonts::FreeSansBold12pt7b);
+  lcd.setFont(&fonts::FreeSansBold24pt7b); // Massive clock font
   lcd.setTextDatum(middle_center);
   lcd.setTextColor(COL_TEXT, COL_BG);
   lcd.drawString(timeBuf, 175, 95);
@@ -370,48 +388,60 @@ static void drawHome() {
   uint16_t yr;
   uint8_t mo, dy, dow;
   schedulerGetDate(yr, mo, dy, dow);
-  const char *dn[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+  const char *dn[] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
   char dateBuf[24];
   sprintf(dateBuf, "%s %02d/%02d/%04d", dn[dow], dy, mo, yr);
-  lcd.setFont(&fonts::FreeSans9pt7b);
+  lcd.setFont(&fonts::FreeSansBold12pt7b); // Bolder Date
   lcd.setTextColor(COL_TEXT_DIM, COL_BG);
   lcd.setTextDatum(middle_center);
-  lcd.drawString(dateBuf, 175, 135);
+  lcd.drawString(dateBuf, 175, 145);
 
   // Next schedule
   int next = schedulerNextSlot();
-  lcd.setFont(&fonts::FreeSans12pt7b);
+  lcd.setFont(&fonts::FreeSansBold12pt7b);
   if (next >= 0) {
     TimeSlot &ts = timeSlotGet(next);
     char nb[40];
-    sprintf(nb, "Next: %s  %02d:%02d", slotShort[next], ts.hour, ts.minute);
+    sprintf(nb, "Next: %s %02d:%02d", slotShort[next], ts.hour, ts.minute);
     lcd.setTextColor(COL_SUCCESS, COL_BG);
-    lcd.drawString(nb, 175, 172);
+    lcd.drawString(nb, 175, 190);
   } else {
     lcd.setTextColor(COL_TEXT_DIM, COL_BG);
-    lcd.drawString("No upcoming schedule", 175, 172);
+    lcd.drawString("--- NO PLAN ---", 175, 190);
   }
-
-  // Status indicator
-  bool on = schedulerIsEnabled();
-  lcd.setFont(&fonts::FreeSans9pt7b);
-  lcd.setTextColor(on ? COL_SUCCESS : COL_DANGER, COL_BG);
-  lcd.drawString(on ? "Schedule: ON" : "Schedule: OFF", 175, 197);
 
   // Vertical divider
   lcd.drawFastVLine(345, 50, 220, COL_DIVIDER);
 
   // --- Right side: 3 buttons + toggle ---
-  btn(360, 55, 110, 50, "Schedule", COL_PRIMARY, COL_TEXT_INV);
-  btn(360, 115, 110, 50, "Modules", COL_ACCENT, COL_TEXT_INV);
-  btn(360, 175, 110, 50, "Dispense", COL_DANGER, COL_TEXT);
+  // Using custom drawn vector icons overlayed on buttons
+  btn(360, 55, 110, 50, "    TIME", COL_PRIMARY, COL_TEXT_INV);
+  lcd.drawCircle(378, 80, 10, COL_TEXT_INV);
+  lcd.fillCircle(378, 80, 2, COL_TEXT_INV);
+  lcd.drawLine(378, 80, 378, 73, COL_TEXT_INV);
+  lcd.drawLine(378, 80, 384, 80, COL_TEXT_INV);
+
+  btn(360, 115, 110, 50, "   PILLS", COL_ACCENT, COL_TEXT_INV);
+  lcd.fillRoundRect(368, 135, 20, 10, 5, COL_TEXT_INV);
+  lcd.fillRoundRect(368, 135, 10, 10, 5, 0xCE59); // Visual half pill line
+
+  btn(360, 175, 110, 50, "  SETUP", COL_DANGER, COL_TEXT_INV);
+
+  // Gear icon (center at 378, 200)
+  lcd.fillCircle(378, 200, 8, COL_TEXT_INV);
+  lcd.fillCircle(378, 200, 4, COL_DANGER);
+  // Gear teeth
+  lcd.fillRect(375, 189, 6, 22, COL_TEXT_INV);
+  lcd.fillRect(367, 197, 22, 6, COL_TEXT_INV);
+  lcd.fillCircle(378, 200, 4, COL_DANGER); // Redraw hole
 
   // Bottom toggle
   lcd.drawFastHLine(0, 270, 480, COL_DIVIDER);
-  lcd.setFont(&fonts::FreeSans9pt7b);
+  lcd.setFont(&fonts::FreeSansBold9pt7b);
   lcd.setTextDatum(middle_left);
   lcd.setTextColor(COL_TEXT_DIM, COL_BG);
   lcd.drawString("Auto:", 15, 295);
+  bool on = schedulerIsEnabled();
   btn(65, 280, 80, 30, on ? "ON" : "OFF", on ? COL_SUCCESS : COL_BTN, COL_TEXT);
 
   // WiFi Button
@@ -431,8 +461,8 @@ static void drawSchedule() {
   lcd.setFont(&fonts::FreeSansBold12pt7b);
   lcd.setTextDatum(middle_center);
   lcd.setTextColor(COL_TEXT_INV, COL_PRIMARY);
-  lcd.drawString("Schedule", 240, 20);
-  btn(5, 5, 60, 30, "Back", COL_CARD, COL_TEXT);
+  lcd.drawString("TIME PLAN", 240, 20);
+  btn(5, 5, 80, 30, "< BACK", COL_CARD, COL_TEXT);
 
   // 2x2 grid
   int cw = 228, ch = 125;
@@ -465,7 +495,7 @@ static void drawSchedule() {
       // Before meal
       lcd.setTextDatum(middle_left);
       lcd.setTextColor(COL_TEXT_DIM, COL_CARD);
-      lcd.drawString("Before", cx + 12, cy + 48);
+      lcd.drawString("BEFORE", cx + 12, cy + 48);
       char b1[8];
       sprintf(b1, "%02d:%02d", t1.hour, t1.minute);
       btn(cx + 100, cy + 35, 80, 28, b1, t1.enabled ? COL_PRIMARY : COL_BTN,
@@ -476,7 +506,7 @@ static void drawSchedule() {
       // After meal
       lcd.setTextDatum(middle_left);
       lcd.setTextColor(COL_TEXT_DIM, COL_CARD);
-      lcd.drawString("After", cx + 12, cy + 88);
+      lcd.drawString("AFTER", cx + 12, cy + 88);
       char b2[8];
       sprintf(b2, "%02d:%02d", t2.hour, t2.minute);
       btn(cx + 100, cy + 75, 80, 28, b2, t2.enabled ? COL_PRIMARY : COL_BTN,
@@ -547,8 +577,8 @@ static void drawTimePicker() {
   lcd.drawString(mBuf, 300, 145);
 
   // Save / Cancel
-  btn(100, 230, 140, 45, "Save", COL_SUCCESS, COL_TEXT);
-  btn(260, 230, 140, 45, "Cancel", COL_BTN, COL_TEXT);
+  btn(100, 230, 140, 45, "SAVE", COL_SUCCESS, COL_TEXT);
+  btn(260, 230, 140, 45, "CANCEL", COL_BTN, COL_TEXT);
 }
 
 // ============================================================
@@ -562,8 +592,8 @@ static void drawModules() {
   lcd.setFont(&fonts::FreeSansBold12pt7b);
   lcd.setTextDatum(middle_center);
   lcd.setTextColor(COL_TEXT_INV, COL_ACCENT);
-  lcd.drawString("Medicine Modules", 240, 20);
-  btn(5, 5, 60, 30, "Back", COL_CARD, COL_TEXT);
+  lcd.drawString("PILLS MODULES", 240, 20);
+  btn(5, 5, 80, 30, "< BACK", COL_CARD, COL_TEXT);
 
   // Page
   lcd.setFont(&fonts::FreeSans9pt7b);
@@ -620,9 +650,9 @@ static void drawModules() {
 
   // Nav buttons
   if (modPage > 0)
-    btn(10, 300, 90, 18, "< Prev", COL_BTN, COL_TEXT);
+    btn(10, 300, 90, 18, "< PREV", COL_BTN, COL_TEXT);
   if (modPage + 3 < NUM_MODULES)
-    btn(380, 300, 90, 18, "Next >", COL_BTN, COL_TEXT);
+    btn(380, 300, 90, 18, "NEXT >", COL_BTN, COL_TEXT);
 }
 
 // ============================================================
@@ -640,7 +670,7 @@ static void drawModuleDetail() {
   lcd.setTextDatum(middle_center);
   lcd.setTextColor(COL_TEXT_INV, COL_ACCENT);
   lcd.drawString(title, 240, 20);
-  btn(5, 5, 60, 30, "Back", COL_CARD, COL_TEXT);
+  btn(5, 5, 80, 30, "< BACK", COL_CARD, COL_TEXT);
 
   // --- Name ---
   drawShadowCard(15, 50, 450, 50);
@@ -652,7 +682,7 @@ static void drawModuleDetail() {
   lcd.setTextColor(COL_TEXT, COL_CARD);
   lcd.setTextDatum(middle_center);
   lcd.drawString(mod.name, 240, 75);
-  btn(380, 58, 75, 34, "Change", COL_PRIMARY, COL_TEXT_INV);
+  btn(380, 58, 75, 34, "EDIT", COL_PRIMARY, COL_TEXT_INV);
 
   // --- Qty ---
   drawShadowCard(15, 110, 450, 55);
@@ -688,60 +718,68 @@ static void drawModuleDetail() {
   }
 
   // Save
-  btn(140, 272, 200, 42, "Save", COL_SUCCESS, COL_TEXT);
+  btn(140, 272, 200, 42, "SAVE", COL_SUCCESS, COL_TEXT);
 }
 
 // ============================================================
 // DISPENSING / RESULT
-// ============================================================
-void uiShowDispensing(int moduleIndex) {
+static int dispModuleIdx = 0;
+static bool dispSuccess = false;
+
+void uiSetDispensingScreen(int moduleIndex) {
+  dispModuleIdx = moduleIndex;
+  switchTo(SCREEN_DISPENSING);
+}
+
+void uiSetResultScreen(bool success) {
+  dispSuccess = success;
+  switchTo(SCREEN_RESULT);
+}
+
+void uiGoHome(void) { switchTo(SCREEN_HOME); }
+
+// These functions will now be called by switchTo(SCREEN_X) to draw the initial
+// state The animation will be handled in uiLoop()
+static void drawDispensing() {
   LGFX &lcd = getDisplay();
   lcd.fillScreen(COL_BG);
-
   lcd.setFont(&fonts::FreeSansBold12pt7b);
   lcd.setTextDatum(middle_center);
   lcd.setTextColor(COL_PRIMARY, COL_BG);
   lcd.drawString("Dispensing...", 240, 100);
 
-  MedModule &mod = moduleGet(moduleIndex);
+  MedModule &mod = moduleGet(dispModuleIdx);
   char buf[32];
-  sprintf(buf, "Module %d: %s", moduleIndex + 1, mod.name);
+  sprintf(buf, "Module %d: %s", dispModuleIdx + 1, mod.name);
   lcd.setFont(&fonts::FreeSans9pt7b);
   lcd.setTextColor(COL_TEXT_DIM, COL_BG);
   lcd.drawString(buf, 240, 140);
 
-  // Simple loading animation
+  // Draw base circles
   for (int f = 0; f < 8; f++) {
-    lcd.fillCircle(200 + f * 12, 200, 5, COL_PRIMARY);
-    delay(100);
+    lcd.drawCircle(200 + f * 12, 200, 5, COL_TEXT_DIM);
   }
-  delay(200);
 }
 
-void uiShowResult(int timeSlotIndex, bool success) {
+static void drawResult() {
   LGFX &lcd = getDisplay();
   lcd.fillScreen(COL_BG);
 
-  uint16_t col = success ? COL_SUCCESS : COL_DANGER;
+  uint16_t col = dispSuccess ? COL_SUCCESS : COL_DANGER;
 
-  // Big circle
   lcd.fillCircle(240, 110, 50, col);
   lcd.setFont(&fonts::FreeSansBold12pt7b);
   lcd.setTextDatum(middle_center);
   lcd.setTextColor(COL_TEXT_INV, col);
-  lcd.drawString(success ? "OK" : "X", 240, 110);
+  lcd.drawString(dispSuccess ? "OK" : "X", 240, 110);
 
-  // Message
   lcd.setFont(&fonts::FreeSansBold12pt7b);
   lcd.setTextColor(col, COL_BG);
-  lcd.drawString(success ? "Dispensed!" : "Error!", 240, 200);
+  lcd.drawString(dispSuccess ? "Dispensed!" : "Error!", 240, 200);
 
   lcd.setFont(&fonts::FreeSans9pt7b);
   lcd.setTextColor(COL_TEXT_DIM, COL_BG);
   lcd.drawString("Returning home...", 240, 250);
-
-  delay(3000);
-  switchTo(SCREEN_HOME);
 }
 
 // ============================================================
@@ -875,13 +913,13 @@ static void touchTimePicker(int x, int y) {
   }
   // M+: 270-330, 90-125
   if (x >= 270 && x <= 330 && y >= 90 && y <= 125) {
-    editM = (editM + 5) % 60;
+    editM = (editM + 1) % 60;
     switchTo(SCREEN_TIME_PICKER);
     return;
   }
   // M-: 270-330, 165-200
   if (x >= 270 && x <= 330 && y >= 165 && y <= 200) {
-    editM = (editM + 55) % 60;
+    editM = (editM + 59) % 60;
     switchTo(SCREEN_TIME_PICKER);
     return;
   }
@@ -949,16 +987,9 @@ static void touchModuleDetail(int x, int y) {
 
   // Change name: 380-455, 58-92
   if (x >= 380 && x <= 455 && y >= 58 && y <= 92) {
-    int cur = 0;
-    for (int i = 0; i < numPresets; i++) {
-      if (strcmp(mod.name, presetNames[i]) == 0) {
-        cur = i;
-        break;
-      }
-    }
-    cur = (cur + 1) % numPresets;
-    moduleSetName(editModIdx, presetNames[cur]);
-    switchTo(SCREEN_MODULE_DETAIL);
+    inputName = mod.name;
+    oskShift = false;
+    switchTo(SCREEN_NAME_OSK);
     return;
   }
 
@@ -971,7 +1002,7 @@ static void touchModuleDetail(int x, int y) {
   }
   // Qty+: 360-420, 118-156
   if (x >= 360 && x <= 420 && y >= 118 && y <= 156) {
-    if (mod.qty < 99)
+    if (mod.qty < 18) // Max 18 pills per module
       mod.qty++;
     switchTo(SCREEN_MODULE_DETAIL);
     return;
@@ -999,7 +1030,8 @@ static void touchModuleDetail(int x, int y) {
 }
 
 // ============================================================
-// MANUAL DISPENSE SCREEN — Grid of 6 modules
+// ============================================================
+// MANUAL DISPENSE SCREEN (MAINTENANCE)
 // ============================================================
 static void drawManualDispense() {
   auto &lcd = canvas;
@@ -1009,16 +1041,34 @@ static void drawManualDispense() {
   lcd.setFont(&fonts::FreeSansBold12pt7b);
   lcd.setTextDatum(middle_center);
   lcd.setTextColor(COL_TEXT_INV, COL_DANGER);
-  lcd.drawString("Manual Dispense", 240, 20);
-  btn(5, 5, 60, 30, "Back", COL_CARD, COL_TEXT);
+  lcd.drawString("MAINTENANCE", 240, 20);
+  btn(5, 5, 80, 30, "< BACK", COL_CARD, COL_TEXT);
 
-  // Draw 6 modules as buttons
-  int cw = 140, ch = 100;
+  // --- AUDIO CONTROLS (Y = 45 to 110) ---
+  lcd.fillRoundRect(20, 50, 440, 60, 8, COL_CARD);
+  lcd.setFont(&fonts::FreeSans9pt7b);
+  lcd.setTextDatum(middle_center);
+  lcd.setTextColor(COL_TEXT_DIM, COL_CARD);
+  lcd.drawString("SPEAKER VOLUME", 80, 80);
+
+  int vol = audioGetVolume();
+  btn(170, 60, 50, 40, "-", COL_BTN, COL_TEXT);
+  char vBuf[16];
+  sprintf(vBuf, "%d", vol);
+  lcd.setTextColor(COL_PRIMARY, COL_CARD);
+  lcd.setFont(&fonts::FreeSansBold12pt7b);
+  lcd.drawString(vBuf, 250, 80);
+  btn(280, 60, 50, 40, "+", COL_BTN, COL_TEXT);
+
+  btn(350, 60, 90, 40, "PLAY TEST", COL_WARN, COL_BG);
+
+  // --- MODULE DROPS (Y = 120+) ---
+  int cw = 140, ch = 80;
   for (int i = 0; i < NUM_MODULES; i++) {
     int col = i % 3;
     int row = i / 3;
     int cx = 20 + col * 150;
-    int cy = 60 + row * 115;
+    int cy = 130 + row * 90;
 
     MedModule &mod = moduleGet(i);
     bool active = servoIsManualActive(i);
@@ -1031,18 +1081,18 @@ static void drawManualDispense() {
     lcd.setTextDatum(middle_center);
     lcd.setTextColor(active ? COL_BG : COL_PRIMARY,
                      active ? COL_WARN : COL_CARD);
-    lcd.drawString(mod.name, cx + cw / 2, cy + 30);
+    lcd.drawString(mod.name, cx + cw / 2, cy + 25);
 
     // Action button inside card
     int bx = cx + 20;
-    int by = cy + 60;
-    btn(bx, by, 100, 30, active ? "STOP" : "DISPENSE",
-        active ? COL_DANGER : COL_PRIMARY, active ? COL_TEXT : COL_BG);
+    int by = cy + 45;
+    btn(bx, by, 100, 25, active ? "WAIT..." : "DROP",
+        active ? COL_WARN : COL_SUCCESS, active ? COL_BG : COL_TEXT_INV);
   }
 }
 
 // ============================================================
-// TOUCH: MANUAL DISPENSE
+// TOUCH: MANUAL DISPENSE (MAINTENANCE)
 // ============================================================
 static void touchManualDispense(int x, int y) {
   // Back: 5-65, 5-35
@@ -1051,18 +1101,39 @@ static void touchManualDispense(int x, int y) {
     return;
   }
 
-  int cw = 140, ch = 100;
+  // Audio Controls (- button)
+  if (x >= 170 && x <= 220 && y >= 60 && y <= 100) {
+    int v = audioGetVolume() - 2;
+    if (v < 0)
+      v = 0;
+    audioSetVolume(v);
+    switchTo(SCREEN_MANUAL_DISPENSE);
+    return;
+  }
+  // Audio Controls (+ button)
+  if (x >= 280 && x <= 330 && y >= 60 && y <= 100) {
+    int v = audioGetVolume() + 2;
+    if (v > 30)
+      v = 30;
+    audioSetVolume(v);
+    switchTo(SCREEN_MANUAL_DISPENSE);
+    return;
+  }
+  // Audio TEST button
+  if (x >= 350 && x <= 440 && y >= 60 && y <= 100) {
+    audioPlay(1); // Play startup sound as test
+    return;
+  }
+
+  // Modules Grid
+  int cw = 140, ch = 80;
   for (int i = 0; i < NUM_MODULES; i++) {
     int col = i % 3;
     int row = i / 3;
     int cx = 20 + col * 150;
-    int cy = 60 + row * 115;
+    int cy = 130 + row * 90;
 
-    // Action button inside card
-    int bx = cx + 20;
-    int by = cy + 60;
-
-    if (x >= bx && x <= bx + 100 && y >= by && y <= by + 30) {
+    if (x >= cx && x <= cx + cw && y >= cy && y <= cy + ch) {
       if (manualCb) {
         manualCb(i);
         switchTo(SCREEN_MANUAL_DISPENSE); // Redraw
@@ -1083,7 +1154,7 @@ static void drawConfirmDispense() {
   lcd.setFont(&fonts::FreeSansBold12pt7b);
   lcd.setTextDatum(middle_center);
   lcd.setTextColor(COL_BG, COL_WARN);
-  lcd.drawString("Medicine Time!", 240, 22);
+  lcd.drawString("MEDICATION TIME", 240, 22);
 
   // Time Slot Info
   lcd.setFont(&fonts::FreeSans12pt7b);
@@ -1113,10 +1184,7 @@ static void drawConfirmDispense() {
   lcd.fillRoundRect(60, 140, 360, 90, 8, COL_SUCCESS);
   lcd.setFont(&fonts::FreeSansBold12pt7b);
   lcd.setTextColor(COL_TEXT_INV, COL_SUCCESS);
-  lcd.drawString("PRESS TO DISPENSE", 240, 185);
-
-  // Cancel Button
-  btn(190, 250, 100, 40, "Cancel", COL_CARD, COL_TEXT_DIM);
+  lcd.drawString("PRESS TO DROP PILLS", 240, 185);
 }
 
 // ============================================================
@@ -1125,17 +1193,15 @@ static void drawConfirmDispense() {
 static void touchConfirmDispense(int x, int y) {
   // Confirm Button (60, 140, 360, 90)
   if (x > 60 && x < 420 && y > 140 && y < 230) {
+    if (confirmPressed)
+      return;
+    confirmPressed = true;
     if (confirmCb) {
       confirmCb(confirmSlotIdx);
     } else {
       switchTo(SCREEN_HOME);
     }
     return;
-  }
-
-  // Cancel Button (190, 250, 100, 40)
-  if (x > 190 && x < 290 && y > 250 && y < 290) {
-    switchTo(SCREEN_HOME);
   }
 }
 
@@ -1412,6 +1478,120 @@ static void touchWifiOSK(int x, int y) {
           }
         }
         switchTo(SCREEN_WIFI_OSK); // Redraw
+        return;
+      }
+    }
+  }
+}
+
+// ============================================================
+// NAME OSK (For custom module names)
+// ============================================================
+static void drawNameOSK() {
+  auto &lcd = canvas;
+  lcd.fillScreen(COL_BG);
+  lcd.fillRect(0, 0, 480, 40, COL_ACCENT);
+  lcd.setFont(&fonts::FreeSansBold12pt7b);
+  lcd.setTextDatum(middle_center);
+  lcd.setTextColor(COL_TEXT_INV, COL_ACCENT);
+  char title[32];
+  sprintf(title, "Edit Module %d", editModIdx + 1);
+  lcd.drawString(title, 240, 20);
+  btn(5, 5, 80, 30, "< BACK", COL_CARD, COL_TEXT);
+  btn(390, 5, 85, 30, "SAVE", COL_SUCCESS, COL_TEXT_INV);
+
+  // Input Box
+  lcd.fillRoundRect(20, 50, 440, 40, 5, COL_CARD);
+  lcd.setFont(&fonts::FreeSans12pt7b);
+  lcd.setTextDatum(middle_left);
+  lcd.setTextColor(COL_TEXT, COL_CARD);
+  String disp = inputName + "_";
+  lcd.drawString(disp.c_str(), 30, 70);
+
+  // Keyboard (reuse gaps and logic from WiFi OSK)
+  int startX = 10;
+  int startY = 100;
+  int keyW = 42;
+  int keyH = 45;
+  int gap = 4;
+  lcd.setFont(&fonts::FreeSans9pt7b);
+  lcd.setTextDatum(middle_center);
+
+  for (int r = 0; r < 4; r++) {
+    int rowOffset = (r == 2) ? 20 : 0;
+    for (int c = 0; c < 10; c++) {
+      const char *k = oskShift ? keysShift[r][c] : keys[r][c];
+      if (k[0] == '\0')
+        continue; // Skip empty
+      int x = startX + rowOffset + c * (keyW + gap);
+      int y = startY + r * (keyH + gap);
+
+      int w = keyW;
+      if (r == 3 && c == 8)
+        w = keyW * 2 + gap; // DEL
+
+      if (r == 3 && c == 0) { // Shift
+        btn(x, y, w, keyH, k, oskShift ? COL_ACCENT : COL_BTN, COL_TEXT);
+      } else if (r == 3 && c == 8) {
+        btn(x, y, w, keyH, k, COL_DANGER, COL_TEXT);
+      } else {
+        btn(x, y, w, keyH, k, COL_BTN, COL_TEXT);
+      }
+    }
+  }
+}
+
+static void touchNameOSK(int x, int y) {
+  // Navigation
+  if (y <= 40) {
+    if (x <= 90) { // Cancel
+      switchTo(SCREEN_MODULE_DETAIL);
+      return;
+    }
+    if (x >= 390) { // Save
+      moduleSetName(editModIdx, inputName.c_str());
+      if (nameChangeCb) {
+        nameChangeCb(editModIdx, inputName.c_str());
+      }
+      schedulerSave(); // Save to flash
+      switchTo(SCREEN_MODULE_DETAIL);
+      return;
+    }
+  }
+
+  // Keyboard Touch
+  int startX = 10;
+  int startY = 100;
+  int keyW = 42;
+  int keyH = 45;
+  int gap = 4;
+
+  for (int r = 0; r < 4; r++) {
+    int rowOffset = (r == 2) ? 20 : 0;
+    for (int c = 0; c < 10; c++) {
+      int px = startX + rowOffset + c * (keyW + gap);
+      int py = startY + r * (keyH + gap);
+      int w = keyW;
+      if (r == 3 && c == 8)
+        w = keyW * 2 + gap; // DEL
+
+      const char *k = oskShift ? keysShift[r][c] : keys[r][c];
+      if (k[0] == '\0')
+        continue;
+
+      if (x >= px && x <= px + w && y >= py && y <= py + keyH) {
+        if (r == 3 && c == 0) {
+          oskShift = !oskShift;
+        } else if (r == 3 && c == 8) {
+          if (inputName.length() > 0) {
+            inputName.remove(inputName.length() - 1);
+          }
+        } else {
+          if (inputName.length() < 24) { // Max length for display
+            inputName += k;
+          }
+        }
+        switchTo(SCREEN_NAME_OSK); // Redraw
         return;
       }
     }

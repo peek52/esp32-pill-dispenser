@@ -44,6 +44,7 @@ void schedulerSave(void);
 void schedulerLoad(void);
 
 // --- RTC Time ---
+void schedulerSyncNTP(void);
 void schedulerGetTime(uint8_t &h, uint8_t &m, uint8_t &s);
 void schedulerGetDate(uint16_t &year, uint8_t &month, uint8_t &day,
                       uint8_t &dow);
@@ -56,6 +57,10 @@ int schedulerNextSlot(void); // returns slot index (0-6) or -1
 // --- Callback for dispense trigger ---
 typedef void (*SchedDispenseCallback)(int timeSlotIndex);
 void schedulerSetCallback(SchedDispenseCallback cb);
+
+// --- Callback for pre-dispense warning (10 mins before) ---
+typedef void (*SchedWarnCallback)(int timeSlotIndex);
+void schedulerSetWarnCallback(SchedWarnCallback cb);
 
 // --- Schedule master enable/disable ---
 bool schedulerIsEnabled(void);

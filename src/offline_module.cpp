@@ -18,7 +18,17 @@ void offlineSetup() {
 }
 
 void addToOfflineQueue(String type, String data) {
-  File file = LittleFS.open(OFFLINE_LOG_FILE, FILE_APPEND);
+  File file = LittleFS.open(OFFLINE_LOG_FILE, FILE_READ);
+  if (file) {
+    size_t fsize = file.size();
+    file.close();
+    if (fsize > 50000) { // Limit to 50KB
+      LOG_WARN("[Offline] Offline log exceeded 50KB. Removing old logs.");
+      LittleFS.remove(OFFLINE_LOG_FILE);
+    }
+  }
+
+  file = LittleFS.open(OFFLINE_LOG_FILE, FILE_APPEND);
   if (!file) {
     LOG_ERROR("[Offline] Failed to open log file for appending");
     return;
